@@ -996,6 +996,54 @@ export async function apply(ctx, refs) {
       };
 
       /**
+       * 「选择」某个账号：启用它，并**禁用同一渠道的其余所有账号**。
+       *
+       * 这是用户要的语义 —— "我选哪个就只用哪个"。一次调用把整个渠道
+       * 收敛到单账号，不用逐个点禁用。
+       *
+       * ⚠️ **只影响同一个渠道**：四个渠道各自独立，选 workbuddy 的号
+       * 不会动 trae/qoder/zcode 的选择。
+       *
+       * 每条变更都写进用户意图，所以重启后会按这次的选择恢复。
+       */
+      const accountSelect = async (plugin, authIndex) => {
+        const state = await ensureRunning();
+        if (!state.running) return { ok: false, error: 'cpa-unavailable' };
+        if (cachedAdminKey.value === '') return { ok: false, error: 'no-admin-key' };
+        try {
+          const data = await cpaFetch(options(), '/v0/management/auth-files');
+          const files = (Array.isArray(data?.files) ? data.files : []).filter(
+            (file) => file?.provider === plugin,
+          );
+          const target = files.find((file) => String(file.auth_index) === String(authIndex));
+          if (target === undefined) return { ok: false, error: 'auth-not-found' };
+
+          /** 要和目标一致的账号不动，其余的全部收敛。 */
+          const intent = readAccountIntent();
+          const changed = [];
+          for (const file of files) {
+            const shouldEnable = file.name === target.name;
+            if (file.disabled === !shouldEnable) {
+              /* 状态已经对了，跳过这次请求 */
+              intent.enabled[file.name] = shouldEnable;
+              continue;
+            }
+            await cpaFetch(options(), '/v0/management/auth-files/status', {
+              method: 'PATCH',
+              body: JSON.stringify({ name: file.name, disabled: shouldEnable !== true }),
+            });
+            intent.enabled[file.name] = shouldEnable;
+            changed.push({ name: file.name, enabled: shouldEnable });
+          }
+          intent.updatedAt = new Date().toISOString();
+          writeAccountIntent(intent);
+          return { ok: true, name: target.name, changed };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      };
+
+      /**
        * 起一次渠道登录。
        *
        * 走 CPA 的 **v8** OAuth 接口（注意是 `/v8/`，不是 `/v0/`）。
@@ -1214,6 +1262,24 @@ export async function apply(ctx, refs) {
               body = {};
             }
             return json(await accountEnabled(body.plugin, body.authIndex, body.enabled === true));
+          },
+        },
+        {
+          /**
+           * 「选择」账号：启用它，并禁用**同一渠道**的其余所有账号。
+           *
+           * 一次调用把整个渠道收敛到单账号 —— 用户不必逐个点禁用。
+           */
+          path: '/api/v1/cpa/account-select',
+          methods: ['POST'],
+          handle: async (request) => {
+            let body = {};
+            try {
+              body = await request.json();
+            } catch {
+              body = {};
+            }
+            return json(await accountSelect(body.plugin, body.authIndex));
           },
         },
         {

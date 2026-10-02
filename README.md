@@ -8,10 +8,12 @@
 
 - **账号余额**：可用 / 已用 / 额度池 / 套餐包数；token 与积分分开算，不混加
 - **一键操作**：全部签到、全部任务、刷新；每账号可单独签到 / 任务
-- **启用 / 禁用账号**：禁用后该号完全不参与调度 —— 这是「只用一个号」的可靠办法
-- **账号使用顺序**：拖动卡片排序，用满一个再切下一个
+- **选择账号**：点某个号的「选择」，**同渠道其余账号自动全部禁用** ——
+  一个渠道只由一个号消耗积分，不用逐个点禁用
+- **添加账号**：每个渠道账号列表末尾的「+ 添加账号」，走 OAuth 授权页，
+  浏览器里完成登录即可，不需要手动复制回调 URL
+- **记住你的选择**：重启 DSH 后仍是你上次选的那个号
 - **自动签到开关**：读取并切换 CPA 的 `checkin_auto`
-- **活跃账号检测**：按真实请求统计标出「使用中」
 - **进程生命周期**：DSH 开则 CPA 起（已在跑就复用），DSH 关则只关自己启的那个
 - **开机补签**：CPA 自带的 09:00 / 21:00 定时会因 DSH 未开而漏，插件启动时补一次
 
@@ -71,9 +73,13 @@ target: <本目录绝对路径>
 
 - **仅 Windows**：CPA 目前以 Windows 可执行文件 + DLL 插件形式提供。
 - **不改动 CPA 的配置**：插件只调用 CPA 的管理接口。路由策略等仍由 CPA 的 `config.yaml` 决定。
-- **`disabled` 是唯一可靠的"单账号"手段**：`priority` 只是"尽量先用高的"，
+- **`disabled` 是唯一可靠的「单账号」手段**：`priority` 只是"尽量先用高的"，
   `fill-first` 取"第一个可用凭据" —— 两者都会在首选号不可用时降级到别的号。
-  只有禁用是"根本不参与"。
+  只有禁用是"根本不参与"。面板的「选择」做的就是这件事。
+- **被限流的号看不出异常**：上游有模型级限流（code 6004），被限的号 CPA 仍显示
+  `status: active`，只有实际发请求才暴露。面板显示"启用"不等于"这个号现在能用"。
+- **host 半端改动需要重启 DSH**：`index.js` / `adapters.js` 不会热重载；
+  `client.js` 相反，刷新页面即可。
 
 ## 文件
 
@@ -81,6 +87,7 @@ target: <本目录绝对路径>
 |---|---|
 | `index.js` | 宿主半端：生命周期、HTTP 路由、持有密钥 |
 | `adapters.js` | 四个渠道的接口差异收敛层 |
+| `setup.js` | 环境准备：下载 CPA 本体与渠道插件（校验 sha256 后解压） |
 | `client.js` | 浏览器半端：面板 UI（CJS bundle） |
 | `cordis.patch.yml` | 把本插件插入 profile 的 Loader 行 |
 | `locale/*.json` | 插件卡片标题与描述 |
@@ -95,7 +102,8 @@ target: <本目录绝对路径>
 | `/api/v1/cpa/plugins` | GET | 已装渠道列表与能力 |
 | `/api/v1/cpa/accounts?plugin=` | GET | 账号 + 余额 + 活跃账号 |
 | `/api/v1/cpa/action` | POST | `{plugin, kind, authIndex}` → 签到 / 任务 |
-| `/api/v1/cpa/account-enabled` | POST | `{plugin, authIndex, enabled}` → 启用 / 禁用账号 |
+| `/api/v1/cpa/account-select` | POST | `{plugin, authIndex}` → **选择账号**（启用它，同渠道其余自动禁用） |
+| `/api/v1/cpa/account-enabled` | POST | `{plugin, authIndex, enabled}` → 单个启用 / 禁用 |
 | `/api/v1/cpa/account-intent` | GET/POST | 读 / 恢复「用户上次的账号选择」 |
 | `/api/v1/cpa/auth` | GET/DELETE | 起登录（`?plugin=`）/ 查进度（`?state=`）/ 取消 |
 | `/api/v1/cpa/auto-checkin` | GET/POST | 自动签到开关 |

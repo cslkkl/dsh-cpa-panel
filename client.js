@@ -62,8 +62,11 @@ window.__ModuleLoader__.load({
       checkinAll: '全部签到',
       tasksAll: '全部任务',
       tasks: '任务',
-      inUse: '使用中',
       disabled: '已禁用',
+      select: '选择',
+      selected: '已选择',
+      selectHint: '选中这个账号，同渠道其余账号会自动全部禁用',
+      selectedHint: '当前就是这个账号在服务',
       enable: '启用',
       disable: '禁用',
       enableHint: '重新让这个账号参与调度',
@@ -88,7 +91,6 @@ window.__ModuleLoader__.load({
       noAccounts: '该插件没有账号',
       checkedIn: '已签到',
       notCheckedIn: '未签到',
-      activeHint: '「使用中」按实际请求统计标出',
       streak: '连签',
       days: '天',
       packs: '包',
@@ -120,8 +122,11 @@ window.__ModuleLoader__.load({
       checkinAll: 'Check in all',
       tasksAll: 'Run all tasks',
       tasks: 'Tasks',
-      inUse: 'In use',
       disabled: 'Disabled',
+      select: 'Select',
+      selected: 'Selected',
+      selectHint: 'Use this account and automatically disable the others in this channel',
+      selectedHint: 'This account is currently serving',
       enable: 'Enable',
       disable: 'Disable',
       enableHint: 'Let this account take part in scheduling again',
@@ -147,7 +152,6 @@ window.__ModuleLoader__.load({
       noAccounts: 'No accounts',
       checkedIn: 'Checked in',
       notCheckedIn: 'Not checked in',
-      activeHint: 'In-use is detected from real request stats',
       streak: 'Streak',
       days: 'd',
       packs: 'packs',
@@ -193,10 +197,23 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 启用 / 禁用账号。
+     * 「选择」账号：启用它，并自动禁用**同一渠道**的其余账号。
      *
-     * 这是"只有一个账号消耗积分"的可靠手段 —— 见 AccountCard 里
-     * 「启用 / 禁用」按钮的注释。
+     * 一次调用把整个渠道收敛到单账号 —— 用户不必逐个点禁用。
+     */
+    function selectCpaAccount(plugin, authIndex) {
+      return api('/api/v1/cpa/account-select', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ plugin, authIndex }),
+      });
+    }
+
+    /**
+     * 启用 / 禁用账号（单个切换）。
+     *
+     * 面板上已不直接用这个 —— 改成「选择」一步到位。保留它是为了
+     * 将来可能需要"只禁用某一个、其余不动"的场景。
      */
     function setAccountEnabled(plugin, authIndex, enabled) {
       return api('/api/v1/cpa/account-enabled', {
@@ -230,8 +247,14 @@ window.__ModuleLoader__.load({
     /** 单张账号卡。 */
     function AccountCard(props) {
       const { account, capabilities, t } = props;
-      /** 真实在用的 authId（由 host 从请求统计算出），不是账号自己的 selected。 */
-      const isActive = props.activeAuthId !== null && props.activeAuthId === account.authId;
+      /**
+       * 高亮 = **用户选中的这个号**，不做"实际在跑哪个号"的推断。
+       *
+       * 判定就是 `!disabled`：因为「选择」的语义是同渠道只留一个启用，
+       * 所以启用状态**就等于**用户的选择。比原来按请求统计推断可靠得多
+       * （限流、缓存命中都会让统计失真）。
+       */
+      const isSelected = account.disabled !== true;
       const [busy, setBusy] = React.useState('');
 
       const credits = account.credits;
@@ -257,14 +280,19 @@ window.__ModuleLoader__.load({
         }
       };
 
-      /** 切启用 / 禁用。禁用是这个渠道"只用一个号"的可靠手段。 */
-      const toggleEnabled = async () => {
-        setBusy('toggle');
+      /**
+       * 「选择」这个账号。
+       *
+       * 语义：**选中它，同渠道其余账号全部自动禁用** ——
+       * 一次点击把整个渠道收敛到单账号，不用逐个点禁用。
+       * 见 host 的 `accountSelect`。
+       */
+      const selectAccount = async () => {
+        setBusy('select');
         try {
-          const next = account.disabled === true;
-          const result = await setAccountEnabled(props.plugin, account.authIndex, next);
+          const result = await selectCpaAccount(props.plugin, account.authIndex);
           props.onToast(
-            (next ? t('enable') : t('disable')) + (result?.ok === true ? ' ✓' : ' ✗'),
+            t('select') + (result?.ok === true ? ' ✓' : ' ✗'),
             result?.ok === true ? 'ok' : 'err',
             result?.error,
           );
@@ -276,14 +304,13 @@ window.__ModuleLoader__.load({
 
       const badges = [];
       /**
-       * 「使用中」按**实际调度**打标，不看 `account.selected`。
+       * 徽标只反映**用户自己的选择**，不做"实际在用哪个号"的推断。
        *
-       * 两者会不一致：`selected` 是插件面板记的"首选项"，而真正决定扣哪个号
-       * 的是 CPA 的调度器（strategy + priority）。曾经出现过面板标"陈盛泷使用中"
-       * 但实际一直在扣 cherry 的分。
+       * 曾经这里有个「使用中」标签，按 `recent_requests` 统计标出实际
+       * 被调度的账号。用户明确不要它 —— "用哪个我自己会决定"。
+       * 而且那个推断本身也不可靠（被限流 / 缓存命中都会让统计失真）。
        */
-      // Tag 的 tone 语义：solid=当前选中项、success=健康/已签到、outline=只读事实
-      if (isActive) badges.push(React.createElement(Tag, { tone: 'solid', key: 'sel' }, t('inUse')));
+      // Tag 的 tone 语义：solid=当前选中项、danger=已禁用、outline=只读事实
       if (account.disabled) badges.push(React.createElement(Tag, { tone: 'danger', key: 'dis' }, t('disabled')));
       if (account.exhausted) badges.push(React.createElement(Tag, { tone: 'warning', key: 'exh' }, t('exhausted')));
       if (account.checkin !== undefined) {
@@ -303,18 +330,6 @@ window.__ModuleLoader__.load({
       }
 
       const actions = [];
-      /**
-       * 这里**没有**「选用」按钮。
-       *
-       * 曾经有，实测确认它**对请求去向零影响** ——
-       * `/v0/management/plugins/<id>/select` 只改插件面板自己记的状态，
-       * 选 cherry、选小满，请求照样走调度器挑的那个号。
-       *
-       * 真正决定用哪个账号的是 `priority`（用管理接口写，见
-       * docs/ARCHITECTURE.md 与 .agents/notes/priority-via-api-2026-10-02.md），
-       * 面板里用「账号使用顺序」的拖动排序控制。
-       * 留一个点了不生效的按钮，比没有更糟。
-       */
       if (capabilities.checkin) {
         actions.push(React.createElement(Button, {
           key: 'checkin', variant: 'outline', size: 'sm', disabled: busy !== '',
@@ -328,24 +343,27 @@ window.__ModuleLoader__.load({
         }, t('tasks')));
       }
       /**
-       * 启用 / 禁用账号。
+       * 「选择」—— 选中它，同渠道其余账号**自动全部禁用**。
        *
-       * **这是"只有一个账号消耗积分"的可靠手段**：
-       *  - `priority` 只是"尽量先用高的"，高的不可用时会降级到别人；
+       * 这是"只有一个账号消耗积分"的唯一手段，也是用户要的交互：
+       * 点一下就把整个渠道收敛到这一个号，不用逐个点禁用。
+       *
+       * 为什么不能只靠 `priority`：
+       *  - `priority` 只是"尽量先用高的"，高的不可用时会**降级**到别人；
        *  - `fill-first` 取"第一个可用凭据"，首选号瞬时冷却就切走；
        *  - 只有**禁用**是"根本不参与"，没有降级空间。
        *
-       * 禁用后**没有兜底** —— 该渠道唯一的号不可用时请求会直接失败。
-       * 这是刻意的：宁可失败也不要偷偷换号把缓存打散。
+       * 代价（刻意）：该渠道唯一的号不可用时请求直接失败，**没有兜底** ——
+       * 宁可失败，也不要偷偷换号把上游缓存打散、把积分花在别的号上。
        */
       actions.push(React.createElement(Button, {
-        key: 'toggle',
+        key: 'select',
         variant: account.disabled ? 'primary' : 'ghost',
         size: 'sm',
-        disabled: busy !== '',
-        title: account.disabled ? t('enableHint') : t('disableHint'),
-        onClick: () => void toggleEnabled(),
-      }, account.disabled ? t('enable') : t('disable')));
+        disabled: busy !== '' || !account.disabled,
+        title: account.disabled ? t('selectHint') : t('selectedHint'),
+        onClick: () => void selectAccount(),
+      }, account.disabled ? t('select') : t('selected')));
 
       const meta = [];
       if (credits !== null && credits.packCount > 0) {
@@ -356,7 +374,7 @@ window.__ModuleLoader__.load({
 
       return React.createElement(
         'div',
-        { className: 'cpa-card' + (isActive ? ' sel' : '') },
+        { className: 'cpa-card' + (isSelected ? ' sel' : '') },
         React.createElement(
           'div',
           { className: 'cpa-card-head' },
@@ -457,18 +475,12 @@ window.__ModuleLoader__.load({
         setState({
           phase: 'ready',
           accounts,
-          // 真实在用的号（null 表示还没有任何请求，不猜）
-          activeAuthId: accountsResponse.data?.active?.authId ?? null,
-          activeSince: accountsResponse.data?.active?.since ?? null,
           remain,
           used,
           size,
         });
-        // 上报给父级，供"账号使用顺序"卡片复用（避免再拉一次接口）
-        props.onAccounts?.({
-          accounts,
-          activeAuthId: accountsResponse.data?.active?.authId ?? null,
-        });
+        // 上报给父级，供「调度」区展示（避免再拉一次接口）
+        props.onAccounts?.({ accounts });
       }, [plugin, capabilities.autoCheckin]);
 
       React.useEffect(() => {
@@ -597,27 +609,6 @@ window.__ModuleLoader__.load({
         children.push(React.createElement('div', { className: 'cpa-toolbar', key: 'tb' }, ...toolbar));
 
         /**
-         * 「使用中」的说明。
-         *
-         * 放在**卡片列表正上方**（而不是工具栏里），因为它解释的是下面那些卡片上的
-         * 徽标，不是上面的按钮。之前夹在工具栏和卡片之间、又没有视觉归属，
-         * 很容易被误读成"自动签到的提示"。
-         */
-        if (state.activeAuthId !== null) {
-          children.push(
-            React.createElement(
-              'div',
-              { className: 'cpa-active-note', key: 'activeHint' },
-              t('activeHint') +
-                '（' +
-                String(state.accounts.find((a) => a.authId === state.activeAuthId)?.nickname ?? '') +
-                (state.activeSince === null ? '' : ' · ' + String(state.activeSince)) +
-                '）',
-            ),
-          );
-        }
-
-        /**
          * 账号网格 + 「+ 添加账号」卡片。
          *
          * 添加卡片**始终**渲染（空列表时它是唯一入口），所以不再用
@@ -632,7 +623,6 @@ window.__ModuleLoader__.load({
                 plugin,
                 capabilities,
                 t,
-                activeAuthId: state.activeAuthId,
                 onToast: (text, kind, detail) => setToast({ text, kind, detail }),
                 onReload: load,
               }),
@@ -805,7 +795,7 @@ window.__ModuleLoader__.load({
        * 为什么不各拉一次：两边都要 `accounts`，各打一次接口既慢又可能不一致
        * （余额是实时算的，两次结果未必相同）。由 PluginPanel 拉一次、上报上来。
        */
-      const [pluginState, setPluginState] = React.useState({ accounts: [], activeAuthId: null });
+      const [pluginState, setPluginState] = React.useState({ accounts: [] });
 
       React.useEffect(() => {
         void (async () => {
@@ -890,7 +880,6 @@ window.__ModuleLoader__.load({
               label: activeMeta.label,
               // 把账号数据传下去，卡片上直接显示余额
               accounts: pluginState.accounts,
-              activeAuthId: pluginState.activeAuthId,
             }),
       );
     }
@@ -936,7 +925,6 @@ window.__ModuleLoader__.load({
       '.cpa-actions{display:flex;gap:6px;flex-wrap:wrap}',
       '.cpa-switch{margin-left:auto;display:flex;align-items:center;gap:8px;cursor:pointer}',
       '.cpa-switch-text{font-size:12px;color:var(--dsw-alias-label-secondary)}',
-      '.cpa-active-note{font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.5;margin-top:-4px}',
       '.cpa-empty{padding:24px;text-align:center;color:var(--dsw-alias-label-tertiary)}',
       '.cpa-muted{color:var(--dsw-alias-label-tertiary)}',
       '.cpa-toast{padding:8px 12px;border-radius:6px;font-size:12px;border:.5px solid}',
