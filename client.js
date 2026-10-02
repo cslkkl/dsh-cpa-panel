@@ -78,6 +78,19 @@ window.__ModuleLoader__.load({
       loginHint: '已在浏览器打开授权页。若没有自动打开，点下面的链接：',
       loginWaiting: '等待授权完成…（完成后会自动刷新账号列表）',
       loginFailed: '起登录失败',
+      setupTitle: '还没准备好运行环境',
+      setupIntro:
+        '本插件不含 CPA 本体和渠道插件。点下面的按钮会自动从官方 Release 下载、校验并解压 —— 大约 40 MB，需要一两分钟。',
+      setupMissing: '缺少',
+      setupCpa: 'CPA 本体',
+      setupPlugins: '渠道插件',
+      setupConfig: '配置文件',
+      setupRun: '一键准备环境',
+      setupRefresh: '重新检测',
+      setupWorking: '正在下载并解压…请稍候（不要关闭窗口）',
+      setupFailed: '准备失败',
+      setupNote:
+        '不会覆盖你自己装的 CPA。若已经装了，请在插件设置里把 exePath 指向它，或把这个目录加进探测位置。',
       exhausted: '已耗尽',
       remain: '可用',
       used: '已用',
@@ -139,6 +152,19 @@ window.__ModuleLoader__.load({
       loginHint: 'The authorization page was opened in your browser. If it did not open, use this link:',
       loginWaiting: 'Waiting for authorization… (the account list refreshes automatically)',
       loginFailed: 'Failed to start login',
+      setupTitle: 'Runtime environment is not ready',
+      setupIntro:
+        'This plugin does not bundle CPA itself or the channel plugins. The button below downloads, verifies and extracts them from the official releases — about 40 MB, one or two minutes.',
+      setupMissing: 'Missing',
+      setupCpa: 'CPA binary',
+      setupPlugins: 'channel plugins',
+      setupConfig: 'config file',
+      setupRun: 'Prepare environment',
+      setupRefresh: 'Re-check',
+      setupWorking: 'Downloading and extracting… please wait (do not close the window)',
+      setupFailed: 'Preparation failed',
+      setupNote:
+        'Your own CPA installation is never overwritten. If you already have one, point exePath at it in the plugin settings instead.',
       exhausted: 'Exhausted',
       remain: 'Available',
       used: 'Used',
@@ -796,6 +822,32 @@ window.__ModuleLoader__.load({
        * （余额是实时算的，两次结果未必相同）。由 PluginPanel 拉一次、上报上来。
        */
       const [pluginState, setPluginState] = React.useState({ accounts: [] });
+      /**
+       * 环境准备状态。
+       *
+       * `null`           —— 还没查
+       * `{ok:true,...}`  —— 查过了，`missing` 列出缺什么
+       * `{phase:'...'}`  —— 正在装（下载要几十秒，必须给反馈）
+       */
+      const [setup, setSetup] = React.useState(null);
+
+      const refreshSetup = React.useCallback(async () => {
+        const result = await api('/api/v1/cpa/setup');
+        if (result?.ok === true) setSetup(result);
+        return result;
+      }, []);
+
+      /** 一键准备环境：下载 + 校验 + 解压 + 写配置。 */
+      const runSetup = React.useCallback(async () => {
+        setSetup({ phase: 'working' });
+        const result = await api('/api/v1/cpa/setup', { method: 'POST' });
+        if (result?.ok === true) {
+          setSetup({ ...(result.state ?? {}), ok: true });
+          return result;
+        }
+        setSetup({ phase: 'error', error: String(result?.error ?? 'failed') });
+        return result;
+      }, []);
 
       React.useEffect(() => {
         void (async () => {
@@ -809,8 +861,9 @@ window.__ModuleLoader__.load({
           if (list.length > 0 && !list.some((p) => p.id === 'workbuddy')) {
             setActive(list[0].id);
           }
+          await refreshSetup();
         })();
-      }, []);
+      }, [refreshSetup]);
 
       const start = async () => {
         const result = await api('/api/v1/cpa/start', { method: 'POST' });
@@ -848,6 +901,61 @@ window.__ModuleLoader__.load({
                     title: t('consoleHint'),
                   }, t('console'))
                 : null,
+            )
+          : null,
+        /**
+         * 环境准备引导。
+         *
+         * 只在**托管目录缺东西**时出现 —— 用户已经自己装好 CPA 的话
+         * 这块完全不渲染，不打扰。
+         *
+         * 为什么要它：别人装完这个插件时，机器上既没有 CPA 也没有渠道
+         * 插件，光有管理界面没法用。这里给一条"点一下就有"的路。
+         */
+        setup !== null && setup.ok !== true
+          ? React.createElement(
+              'div',
+              { className: 'cpa-setup' },
+              React.createElement('div', { className: 'cpa-setup-title' }, t('setupTitle')),
+              React.createElement(
+                'div',
+                { className: 'cpa-hint' },
+                t('setupIntro'),
+              ),
+              Array.isArray(setup.missing) && setup.missing.length > 0
+                ? React.createElement(
+                    'div',
+                    { className: 'cpa-hint' },
+                    t('setupMissing') +
+                      '：' +
+                      setup.missing
+                        .map((k) => (k === 'cpa' ? t('setupCpa') : k === 'plugins' ? t('setupPlugins') : t('setupConfig')))
+                        .join('、'),
+                  )
+                : null,
+              setup.phase === 'working'
+                ? React.createElement('div', { className: 'cpa-hint' }, t('setupWorking'))
+                : setup.phase === 'error'
+                  ? React.createElement(
+                      'div',
+                      { className: 'cpa-hint cpa-err' },
+                      t('setupFailed') + '：' + String(setup.error ?? ''),
+                    )
+                  : React.createElement(
+                      'div',
+                      { className: 'cpa-setup-actions' },
+                      React.createElement(
+                        Button,
+                        { variant: 'primary', size: 'sm', onClick: () => void runSetup() },
+                        t('setupRun'),
+                      ),
+                      React.createElement(
+                        Button,
+                        { variant: 'ghost', size: 'sm', onClick: () => void refreshSetup() },
+                        t('setupRefresh'),
+                      ),
+                    ),
+              React.createElement('div', { className: 'cpa-hint' }, t('setupNote')),
             )
           : null,
         React.createElement('div', { className: 'cpa-tabs' },
@@ -906,6 +1014,11 @@ window.__ModuleLoader__.load({
       '.cpa-addcard{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:86px;border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:13px;cursor:pointer;transition:border-color .16s ease,color .16s ease}',
       '.cpa-addcard:hover{border-color:var(--dsw-alias-label-secondary);color:var(--dsw-alias-label-primary)}',
       '.cpa-addplus{font-size:22px;line-height:1}',
+      // 环境准备引导块：用左侧色条和卡片区分开，避免和账号卡混淆
+      '.cpa-setup{display:flex;flex-direction:column;gap:8px;border:.5px solid var(--dsw-alias-border-l2);border-left:3px solid var(--dsw-alias-label-secondary);border-radius:10px;padding:14px;background:var(--dsw-alias-bg-l1,rgba(255,255,255,.02))}',
+      '.cpa-setup-title{font-size:14px;font-weight:600}',
+      '.cpa-setup-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}',
+      '.cpa-err{color:#f85149}',
       '.cpa-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000}',
       '.cpa-modal{background:var(--dsw-alias-bg-base,#1c1c1e);border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;padding:18px;max-width:520px;width:calc(100% - 48px);display:flex;flex-direction:column;gap:10px;box-shadow:0 16px 40px rgba(0,0,0,.4)}',
       '.cpa-modal-title{font-size:14px;font-weight:600}',

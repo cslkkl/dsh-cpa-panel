@@ -28,7 +28,7 @@ import {
   SCHEDULER_MODE,
   normalizeAccounts,
 } from './adapters.js';
-import { managedExePath } from './setup.js';
+import { managedExePath, inspect as inspectSetup, prepare as prepareSetup } from './setup.js';
 
 /** 本插件那一行的 Loader 条目 id —— 0.1.7 起它就是设置命名空间。 */
 export const ENTRY_ID = 'dsh-cpa-panel';
@@ -335,6 +335,14 @@ export async function apply(ctx, refs) {
     owned: false,
     starting: false,
   };
+
+  /**
+   * 环境准备的运行态。
+   *
+   * `running` 用来挡住并发触发 —— 下载要几十秒，用户很容易连点
+   * 两次「准备环境」，两个流程同时写同一个目录会互相踩。
+   */
+  const setup = { running: false };
 
   /**
    * 解析可执行文件路径，优先级：
@@ -1115,6 +1123,58 @@ export async function apply(ctx, refs) {
       };
 
       const routes = [
+        {
+          /**
+           * 环境状态：托管目录里 CPA 和渠道插件装了没、缺什么。
+           *
+           * 给前端的引导页用 —— 缺东西时显示「一键准备环境」。
+           */
+          path: '/api/v1/cpa/setup',
+          methods: ['GET'],
+          handle: async () => {
+            const config = readConfig();
+            return json({
+              ok: true,
+              ...inspectSetup({ port: config.port, secretKey: cachedAdminKey.value }),
+            });
+          },
+        },
+        {
+          /**
+           * 一键准备环境：下载 CPA 本体 + 渠道插件、校验、解压、写配置。
+           *
+           * ⚠️ 要下载约 40 MB、耗时几十秒。这里**同步跑完再返回**，
+           * 前端拿到的是一次性结果（进度靠 `GET /setup` 轮询状态看）。
+           * 之所以不做成流式：DSH 的插件 HTTP 层是简单请求/响应，
+           * 塞流式协议会把这一层复杂化，而"下载中"这个状态靠轮询
+           * 已经够用。
+           */
+          path: '/api/v1/cpa/setup',
+          methods: ['POST'],
+          handle: async () => {
+            const config = readConfig();
+            const secretKey = cachedAdminKey.value;
+            if (secretKey === '') {
+              /* 没有管理密钥就生不出可用配置 —— 先让用户配密钥 */
+              return json({ ok: false, error: 'no-admin-key' });
+            }
+            if (setup.running) return json({ ok: false, error: 'already-running' });
+            setup.running = true;
+            try {
+              const result = await prepareSetup({ port: config.port, secretKey });
+              /* 装完就把记忆指向托管的那份，省得下次还要探测 */
+              if (result.ok) writeExeMemory(managedExePath());
+              return json(result);
+            } catch (error) {
+              return json({
+                ok: false,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            } finally {
+              setup.running = false;
+            }
+          },
+        },
         {
           path: '/api/v1/cpa/status',
           methods: ['GET'],
