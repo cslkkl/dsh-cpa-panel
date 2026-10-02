@@ -97,25 +97,14 @@ window.__ModuleLoader__.load({
       models: '模型',
       modelCount: '个模型',
       unitMixed: '（不同插件单位不同，未合并）',
-      routing: '账号使用顺序',
-      routingHint: '一个账号用满（或不可用）后自动切下一个。这样缓存能留在同一个账号上，命中率高、省积分。',
+      routing: '调度',
       strategyLabel: '当前策略',
       strategyFillFirst: '用满再用下一个',
       strategyRoundRobin: '轮换',
       strategyWarn: '每个请求换号，缓存几乎不命中，会明显多花积分',
       priority: '账号优先级',
-      priorityHint: '从上到下依次优先；数值越大越优先。首选号用满或不可用时自动切下一个。',
-      dragToReorder: '拖动卡片调整顺序',
-      priorityNone: '该插件没有可排序的账号。',
       rankFirst: '首选',
       noCredits: '余额未知',
-      moveUp: '上移',
-      moveDown: '下移',
-      dragHint: '拖动调整顺序',
-      save: '保存顺序',
-      saving: '保存中…',
-      saved: '已保存',
-      prioritySaved: '优先级已保存',
     };
 
     const en = {
@@ -167,25 +156,14 @@ window.__ModuleLoader__.load({
       models: 'Models',
       modelCount: ' models',
       unitMixed: '(units differ per plugin; not merged)',
-      routing: 'Account order',
-      routingHint: 'Uses one account until exhausted, then moves to the next. Keeps the prompt cache on one account: higher hit rate, fewer credits.',
+      routing: 'Routing',
       strategyLabel: 'Current strategy',
       strategyFillFirst: 'Fill first',
       strategyRoundRobin: 'Round robin',
       strategyWarn: 'switches credentials per request; the cache almost never hits, costing noticeably more',
       priority: 'Account priority',
-      priorityHint: 'Top is preferred. Higher number wins. Falls through when exhausted or unavailable.',
-      dragToReorder: 'Drag cards to reorder',
-      priorityNone: 'No sortable accounts for this plugin.',
       rankFirst: 'First',
       noCredits: 'Balance unknown',
-      moveUp: 'Move up',
-      moveDown: 'Move down',
-      dragHint: 'Drag to reorder',
-      save: 'Save order',
-      saving: 'Saving…',
-      saved: 'Saved',
-      prioritySaved: 'Priority saved',
     };
 
     /** 取数；任何异常收敛成 `{ok:false}`，不抛。 */
@@ -768,263 +746,54 @@ window.__ModuleLoader__.load({
      *
      * 当前策略仍**只读**显示，但不可改。
      */
+    /**
+     * 路由状态（只读）。
+     *
+     * **这里不再有「账号使用顺序」的拖动排序。**
+     *
+     * 为什么删掉：用户控制用哪个账号已经有两个更直接的手段 ——
+     *  1. 账号卡上的「启用 / 禁用」：禁用 = 根本不参与调度，没有降级空间；
+     *  2. 插件会记住用户的选择并在启动时恢复。
+     * 而 `priority` 只是"尽量先用高的"，首选号不可用时会降级到别人 ——
+     * 它既不如禁用可靠，又要用户多维护一份顺序。留着只会误导。
+     *
+     * 保留的部分：**只读展示当前路由策略**。`round-robin` 会让上游
+     * Prompt/KV 缓存几乎不命中（实测 4% vs `fill-first` 的 75%），
+     * 万一被改掉，这行是唯一的提示。
+     */
     function RoutingSection(props) {
       const t = props.t;
-      const plugin = props.plugin;
-      /** 账号余额等，用来把卡片画丰满；由父级传入。 */
-      const accounts = Array.isArray(props.accounts) ? props.accounts : [];
-      const activeAuthId = props.activeAuthId ?? null;
       const [strategy, setStrategy] = React.useState(null);
-      const [order, setOrder] = React.useState([]);
-      const [busy, setBusy] = React.useState(false);
-      const [note, setNote] = React.useState(null);
-      /** 拖拽中的行下标；null 表示没有在拖。 */
-      const [dragIndex, setDragIndex] = React.useState(null);
-      /** 拖到哪一行上方（用于高亮落点）。 */
-      const [dragOverIndex, setDragOverIndex] = React.useState(null);
 
       const load = React.useCallback(async () => {
-        const [routingResponse, priorityResponse] = await Promise.all([
-          api('/api/v1/cpa/routing'),
-          plugin === undefined
-            ? Promise.resolve(undefined)
-            : api('/api/v1/cpa/priority?plugin=' + encodeURIComponent(plugin)),
-        ]);
+        const routingResponse = await api('/api/v1/cpa/routing');
         if (routingResponse?.ok === true) setStrategy(routingResponse.strategy);
-        setOrder(priorityResponse?.ok === true ? (priorityResponse.items ?? []) : []);
-      }, [plugin]);
+      }, []);
 
       React.useEffect(() => {
         void load();
       }, [load]);
 
-      const move = (index, delta) => {
-        const next = [...order];
-        const target = index + delta;
-        if (target < 0 || target >= next.length) return;
-        const tmp = next[index];
-        next[index] = next[target];
-        next[target] = tmp;
-        setOrder(next);
-      };
-
-      const saveOrder = async () => {
-        setBusy(true);
-        try {
-          const result = await api('/api/v1/cpa/priority?plugin=' + encodeURIComponent(plugin), {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ order: order.map((item) => item.nickname) }),
-          });
-          if (result?.ok === true) {
-            setNote(t('prioritySaved'));
-            await load();
-          } else {
-            setNote(String(result?.error ?? 'failed'));
-          }
-        } finally {
-          setBusy(false);
-        }
-      };
-
-      /**
-       * 造一张可拖动的账号卡。
-       *
-       * 抽成函数而不是内联在 map 里：内联时括号嵌套极深，改一次就要重数一遍
-       * （已经数错过一次，`React.createElement` 的闭合漏了一个）。
-       *
-       * @param item - 顺序表里的一项（`file` 是 auth 文件名，即 `authId`）。
-       * @param index - 当前位次，0 是首选。
-       */
-      const buildCard = (item, index) => {
-        const account = accounts.find((a) => a.authId === item.file);
-        const credits = account?.credits;
-        const isActive = activeAuthId !== null && item.file === activeAuthId;
-
-        return React.createElement(
-          'div',
-          {
-            key: item.file,
-            className:
-              'cpa-prow' +
-              (dragIndex === index ? ' dragging' : '') +
-              (dragIndex !== null && dragIndex !== index ? ' shifted' : ''),
-            draggable: !busy,
-            onDragStart: (event) => {
-              setDragIndex(index);
-              setDragOverIndex(index);
-              // 某些浏览器不设 dataTransfer 就不触发拖拽
-              try {
-                event.dataTransfer.setData('text/plain', String(index));
-                event.dataTransfer.effectAllowed = 'move';
-              } catch {
-                /* 忽略 */
-              }
-            },
-            onDragOver: (event) => {
-              event.preventDefault();
-              try {
-                event.dataTransfer.dropEffect = 'move';
-              } catch {
-                /* 忽略 */
-              }
-              /**
-               * **实时重排**：鼠标每压到一张卡，就把被拖的卡挪到那个位置。
-               *
-               * 其他卡当场让位（配合 CSS transition 就是滑动效果），
-               * 而不是等松手才跳 —— 后者看不出"会落到哪"。
-               */
-              if (dragOverIndex === null || dragOverIndex === index) return;
-              const from = dragOverIndex;
-              setDragOverIndex(index);
-              setOrder((prev) => {
-                const next = [...prev];
-                const [moved] = next.splice(from, 1);
-                next.splice(index, 0, moved);
-                return next;
-              });
-              // 被拖的卡现在落到 index 了，同步它的新下标
-              setDragIndex(index);
-            },
-            onDrop: (event) => {
-              event.preventDefault();
-              setDragIndex(null);
-              setDragOverIndex(null);
-            },
-            onDragEnd: () => {
-              setDragIndex(null);
-              setDragOverIndex(null);
-            },
-          },
-          // 位次徽标：第 1 位用主色实心，其余描边
-          React.createElement(
-            'div',
-            { className: 'cpa-card-rank' + (index === 0 ? ' first' : '') },
-            index === 0 ? t('rankFirst') : '#' + String(index + 1),
-          ),
-          React.createElement(
-            'div',
-            { className: 'cpa-card-body' },
-            React.createElement(
-              'div',
-              { className: 'cpa-card-name-row' },
-              React.createElement('span', { className: 'cpa-card-name' }, item.nickname),
-              isActive ? React.createElement(Tag, { tone: 'solid' }, t('inUse')) : null,
-            ),
-            React.createElement(
-              'div',
-              { className: 'cpa-card-sub' },
-              credits === undefined || credits === null
-                ? t('noCredits')
-                : t('remain') +
-                    ' ' +
-                    fmt(credits.remain) +
-                    (credits.packCount > 0 ? ' · ' + String(credits.packCount) + ' ' + t('packs') : ''),
-            ),
-          ),
-          // 拖拽把手（视觉锚点）
-          React.createElement('span', { className: 'cpa-grip', title: t('dragHint') }, '⠿'),
-          // ↑↓ 弱化到角落，给触屏和键盘用
-          React.createElement(
-            'div',
-            { className: 'cpa-card-moves' },
-            React.createElement(
-              Button,
-              {
-                variant: 'ghost',
-                size: 'sm',
-                disabled: busy || index === 0,
-                onClick: () => move(index, -1),
-                title: t('moveUp'),
-                'aria-label': t('moveUp'),
-                className: 'cpa-move',
-              },
-              '↑',
-            ),
-            React.createElement(
-              Button,
-              {
-                variant: 'ghost',
-                size: 'sm',
-                disabled: busy || index === order.length - 1,
-                onClick: () => move(index, 1),
-                title: t('moveDown'),
-                'aria-label': t('moveDown'),
-                className: 'cpa-move',
-              },
-              '↓',
-            ),
-          ),
-        );
-      };
+      if (strategy === null) return null;
 
       return React.createElement(
         'div',
         { className: 'cpa-section' },
         React.createElement('div', { className: 'cpa-section-title' }, t('routing')),
-        React.createElement('div', { className: 'cpa-hint' }, t('routingHint')),
-        // 只读展示当前策略；`round-robin` 会在下面给出警告（它会让缓存几乎不命中）
-        strategy === null
-          ? null
-          : React.createElement(
-              'div',
-              { className: 'cpa-hint' },
-              t('strategyLabel') +
-                '：' +
-                (strategy === 'fill-first'
-                  ? t('strategyFillFirst')
-                  : strategy === 'round-robin'
-                    ? t('strategyRoundRobin') + ' ⚠️ ' + t('strategyWarn')
-                    : String(strategy)),
-            ),
-        /**
-         * 顺序卡片。
-         *
-         * ⚠️ **只有卡片能进 `.cpa-priority`（那是 grid）**：
-         * 提示文字和保存按钮曾经也被塞进去，结果它们各自占一个网格单元，
-         * 按钮就浮在卡片中间了。现在提示在外、卡片在 grid、按钮在下面。
-         */
-        /**
-         * 顺序卡片。
-         *
-         * ⚠️ **只有卡片能进 `.cpa-priority`（那是 grid）**：
-         * 提示文字和保存按钮曾经也被塞进去，结果它们各自占一个网格单元，
-         * 按钮就浮在卡片中间了。现在：提示在外、卡片在 grid、按钮在下面。
-         */
-        order.length > 0
-          ? React.createElement(
-              React.Fragment,
-              null,
-              // 拖拽说明：单独一行，不进 grid
-              React.createElement('div', { className: 'cpa-hint' }, t('dragToReorder')),
-              // 卡片网格
-              React.createElement(
-                'div',
-                { className: 'cpa-priority' },
-                ...order.map((item, index) => buildCard(item, index)),
-              ),
-              // 保存：在 grid 之外，否则会被当成一个网格单元
-              React.createElement(
-                'div',
-                { className: 'cpa-save-row' },
-                React.createElement(
-                  Button,
-                  {
-                    variant: 'primary',
-                    size: 'md',
-                    disabled: busy,
-                    onClick: () => void saveOrder(),
-                  },
-                  busy ? t('saving') : t('save'),
-                ),
-              ),
-            )
-          : React.createElement('div', { className: 'cpa-hint' }, t('priorityNone')),
-        note === null ? null : React.createElement('div', { className: 'cpa-hint' }, note),
+        React.createElement(
+          'div',
+          { className: 'cpa-hint' },
+          t('strategyLabel') +
+            '：' +
+            (strategy === 'fill-first'
+              ? t('strategyFillFirst')
+              : strategy === 'round-robin'
+                ? t('strategyRoundRobin') + ' ⚠️ ' + t('strategyWarn')
+                : String(strategy)),
+        ),
       );
     }
 
-    /** 顶层：状态条 + 插件标签。 */
     function Panel(props) {
       const t = props.t;
       const [status, setStatus] = React.useState(null);
@@ -1176,35 +945,23 @@ window.__ModuleLoader__.load({
       '.cpa-section{border-top:.5px solid var(--dsw-alias-border-l2);padding-top:14px;display:flex;flex-direction:column;gap:8px}',
       '.cpa-section-title{font-size:14px;font-weight:600}',
       '.cpa-hint{font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.5}',
-      '.cpa-priority{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin-top:6px}',
       /**
        * 卡片：像手机桌面的一块图标。
        *  - 最小高度撑出"方块"感，不是细长条；
        *  - 常驻浅阴影，看着有厚度（"一叠"的观感来源）；
        *  - `transition` 让让位是滑过去的。
        */
-      '.cpa-prow{position:relative;display:flex;align-items:flex-start;gap:10px;min-height:86px;padding:12px 12px 10px;border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-base,rgba(128,128,128,.04));cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.10);transition:transform .18s cubic-bezier(.2,.8,.3,1),box-shadow .18s ease,border-color .18s ease,opacity .18s ease}',
-      '.cpa-prow:hover{border-color:var(--dsw-alias-label-tertiary);box-shadow:0 3px 10px rgba(0,0,0,.16)}',
       /**
        * 被拖的卡片：**浮起来**。
        * 放大 + 强阴影 + 轻微倾斜 + 绿色描边，四个信号叠加，
        * 一眼看出"这张被拎在手里"，而不是只变个透明度。
        */
-      '.cpa-prow.dragging{opacity:.92;cursor:grabbing;transform:scale(1.04) rotate(-1.2deg);border-color:#2ea043;box-shadow:0 12px 28px rgba(0,0,0,.34);z-index:2}',
       // 其他卡片在被拖时轻微降透明度，突出被拖的那张
-      '.cpa-prow.shifted{opacity:.72}',
       // 位次徽标：第 1 位用主色实心，其余描边
-      '.cpa-card-rank{flex:none;min-width:30px;height:24px;padding:0 7px;border-radius:8px;border:.5px solid var(--dsw-alias-border-l2);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary)}',
-      '.cpa-card-rank.first{background:#2ea043;border-color:#2ea043;color:#fff}',
       '.cpa-card-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}',
       '.cpa-card-name-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}',
       '.cpa-card-name{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.cpa-card-sub{font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
-      '.cpa-grip{position:absolute;right:10px;top:9px;color:var(--dsw-alias-label-tertiary);font-size:15px;line-height:1;letter-spacing:-1px;user-select:none;opacity:.5}',
-      '.cpa-prow:hover .cpa-grip{opacity:1}',
-      '.cpa-card-moves{position:absolute;right:8px;bottom:6px;display:flex;gap:2px}',
-      '.cpa-move{width:20px!important;min-width:20px!important;height:20px!important;padding:0!important;font-size:11px!important;line-height:1!important}',
-      '.cpa-save-row{display:flex;justify-content:flex-end;margin-top:4px}',
     ].join('');
 
     function injectCss() {
