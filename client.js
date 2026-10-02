@@ -68,6 +68,13 @@ window.__ModuleLoader__.load({
       disable: '禁用',
       enableHint: '重新让这个账号参与调度',
       disableHint: '禁用后这个账号完全不参与调度——这是"只用一个号"的可靠办法',
+      addAccount: '添加账号',
+      startLogin: '开始登录',
+      cancel: '取消',
+      loginIntro: '点「开始登录」后会打开该渠道的授权页，在浏览器里完成登录即可，不需要手动复制任何链接。',
+      loginHint: '已在浏览器打开授权页。若没有自动打开，点下面的链接：',
+      loginWaiting: '等待授权完成…（完成后会自动刷新账号列表）',
+      loginFailed: '起登录失败',
       exhausted: '已耗尽',
       remain: '可用',
       used: '已用',
@@ -130,6 +137,14 @@ window.__ModuleLoader__.load({
       disable: 'Disable',
       enableHint: 'Let this account take part in scheduling again',
       disableHint: 'Fully removes this account from scheduling — the reliable way to use only one',
+      addAccount: 'Add account',
+      startLogin: 'Start login',
+      cancel: 'Cancel',
+      loginIntro:
+        'Clicking "Start login" opens this channel\'s authorization page. Finish in the browser — no link copying needed.',
+      loginHint: 'The authorization page was opened in your browser. If it did not open, use this link:',
+      loginWaiting: 'Waiting for authorization… (the account list refreshes automatically)',
+      loginFailed: 'Failed to start login',
       exhausted: 'Exhausted',
       remain: 'Available',
       used: 'Used',
@@ -211,6 +226,21 @@ window.__ModuleLoader__.load({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ plugin, authIndex, enabled }),
       });
+    }
+
+    /** 起一次渠道登录，返回 `{ok, state, url}`。 */
+    function startAuth(plugin) {
+      return api('/api/v1/cpa/auth?plugin=' + encodeURIComponent(plugin));
+    }
+
+    /** 查登录进度。返回 `{ok, status}`，`status==='wait'` 表示还没完成。 */
+    function authStatus(state) {
+      return api('/api/v1/cpa/auth?state=' + encodeURIComponent(state));
+    }
+
+    /** 取消登录会话。 */
+    function authCancel(state) {
+      return api('/api/v1/cpa/auth?state=' + encodeURIComponent(state), { method: 'DELETE' });
     }
 
     /** 数字千分位。 */
@@ -390,6 +420,38 @@ window.__ModuleLoader__.load({
       const [auto, setAuto] = React.useState(null);
       const [toast, setToast] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+      /**
+       * 添加账号的弹窗状态。
+       *
+       * `null`             —— 弹窗关闭
+       * `{phase:'idle'}`   —— 刚打开，还没起登录
+       * `{phase:'wait', url, state}` —— 等用户去浏览器授权，正在轮询
+       * `{phase:'error', error}`     —— 起登录失败
+       */
+      const [login, setLogin] = React.useState(null);
+
+      /** 起一次登录。 */
+      const startLogin = React.useCallback(async () => {
+        setLogin({ phase: 'starting' });
+        const result = await startAuth(plugin);
+        if (result?.ok !== true) {
+          setLogin({ phase: 'error', error: String(result?.error ?? 'failed') });
+          return;
+        }
+        // 顺便自动打开一次授权页 —— 但保留链接让用户能手动再点
+        try {
+          globalThis.open(result.url, '_blank', 'noreferrer');
+        } catch {
+          /* 弹窗被拦就算了，界面上有链接 */
+        }
+        setLogin({ phase: 'wait', url: result.url, state: result.state });
+      }, [plugin]);
+
+      /** 关闭弹窗时顺手取消 CPA 侧的会话，避免留下悬挂状态。 */
+      const closeLogin = React.useCallback(async () => {
+        if (login !== null && login.state !== undefined) await authCancel(login.state);
+        setLogin(null);
+      }, [login]);
 
       const load = React.useCallback(async () => {
         setState({ phase: 'loading' });
@@ -434,6 +496,29 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         void load();
       }, [load]);
+
+      /**
+       * 轮询登录状态。
+       *
+       * ⚠️ 必须放在 `load` 定义**之后** —— 依赖数组里引用了它。
+       * 放前面会触发 `Cannot access 'load' before initialization`：
+       * const 的暂时性死区，是**运行时报错**而不是编译期，很容易漏掉。
+       *
+       * CPA 在用户完成授权后会自动写好认证文件，所以这里只要等到
+       * 状态不再是 `wait` 就重新拉账号列表。
+       */
+      React.useEffect(() => {
+        if (login === null || login.phase !== 'wait') return undefined;
+        const timer = setInterval(async () => {
+          const result = await authStatus(login.state);
+          if (result?.ok !== true) return;
+          if (result.status === 'wait') return;
+          clearInterval(timer);
+          setLogin(null);
+          await load();
+        }, 2500);
+        return () => clearInterval(timer);
+      }, [login, load]);
 
       const runAll = async (kind) => {
         setBusy(true);
@@ -554,26 +639,39 @@ window.__ModuleLoader__.load({
           );
         }
 
-        if (state.accounts.length === 0) {
-          children.push(React.createElement('div', { className: 'cpa-empty', key: 'none' }, t('noAccounts')));
-        } else {
-          children.push(
-            React.createElement('div', { className: 'cpa-grid', key: 'grid' },
-              ...state.accounts.map((account) =>
-                React.createElement(AccountCard, {
-                  key: account.authIndex,
-                  account,
-                  plugin,
-                  capabilities,
-                  t,
-                  activeAuthId: state.activeAuthId,
-                  onToast: (text, kind, detail) => setToast({ text, kind, detail }),
-                  onReload: load,
-                }),
-              ),
+        /**
+         * 账号网格 + 「+ 添加账号」卡片。
+         *
+         * 添加卡片**始终**渲染（空列表时它是唯一入口），所以不再用
+         * 「有账号才画网格」的分支 —— 空列表也画网格，里面只有添加卡片。
+         */
+        children.push(
+          React.createElement('div', { className: 'cpa-grid', key: 'grid' },
+            ...state.accounts.map((account) =>
+              React.createElement(AccountCard, {
+                key: account.authIndex,
+                account,
+                plugin,
+                capabilities,
+                t,
+                activeAuthId: state.activeAuthId,
+                onToast: (text, kind, detail) => setToast({ text, kind, detail }),
+                onReload: load,
+              }),
             ),
-          );
-        }
+            React.createElement(
+              'button',
+              {
+                type: 'button',
+                key: '__add__',
+                className: 'cpa-addcard',
+                onClick: () => setLogin({ phase: 'idle' }),
+              },
+              React.createElement('span', { className: 'cpa-addplus' }, '+'),
+              React.createElement('span', null, t('addAccount')),
+            ),
+          ),
+        );
       }
 
       if (state.phase === 'loading') {
@@ -589,6 +687,64 @@ window.__ModuleLoader__.load({
         children.push(
           React.createElement('div', { className: 'cpa-toast ' + toast.kind, key: 'toast' },
             toast.text + (toast.detail === undefined ? '' : '（' + String(toast.detail) + '）')),
+        );
+      }
+
+      /**
+       * 添加账号的弹窗。
+       *
+       * 流程：本地起一次 CPA 登录会话 → 打开上游授权页 → 轮询直到完成。
+       * **不需要用户手动粘贴回调 URL** —— 本机模式下 CPA 自己收回调并保存凭据。
+       */
+      if (login !== null) {
+        const body =
+          login.phase === 'wait'
+            ? [
+                React.createElement('div', { className: 'cpa-hint', key: 'h' }, t('loginHint')),
+                React.createElement('a', {
+                  className: 'cpa-loginlink',
+                  key: 'a',
+                  href: login.url,
+                  target: '_blank',
+                  rel: 'noreferrer noopener',
+                }, login.url),
+                React.createElement('div', { className: 'cpa-hint', key: 'w' }, t('loginWaiting')),
+              ]
+            : login.phase === 'error'
+              ? [React.createElement('div', { className: 'cpa-hint', key: 'e' }, t('loginFailed') + '：' + login.error)]
+              : [React.createElement('div', { className: 'cpa-hint', key: 'i' }, t('loginIntro'))];
+
+        const actions = [
+          React.createElement(Button, {
+            key: 'cancel',
+            variant: 'ghost',
+            size: 'sm',
+            onClick: () => void closeLogin(),
+          }, t('cancel')),
+        ];
+        if (login.phase === 'idle' || login.phase === 'error') {
+          actions.push(
+            React.createElement(Button, {
+              key: 'go',
+              variant: 'primary',
+              size: 'sm',
+              onClick: () => void startLogin(),
+            }, t('startLogin')),
+          );
+        }
+
+        children.push(
+          React.createElement(
+            'div',
+            { className: 'cpa-overlay', key: 'login' },
+            React.createElement(
+              'div',
+              { className: 'cpa-modal' },
+              React.createElement('div', { className: 'cpa-modal-title' }, t('addAccount') + ' · ' + meta.label),
+              ...body,
+              React.createElement('div', { className: 'cpa-modal-actions' }, ...actions),
+            ),
+          ),
         );
       }
 
@@ -988,6 +1144,15 @@ window.__ModuleLoader__.load({
       '.cpa-unit{font-size:13px;font-weight:400;color:var(--dsw-alias-label-tertiary)}',
       '.cpa-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
       '.cpa-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}',
+      // 「+ 添加账号」卡片：虚线边框、居中等，和被禁用的账号卡区分开
+      '.cpa-addcard{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:86px;border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:13px;cursor:pointer;transition:border-color .16s ease,color .16s ease}',
+      '.cpa-addcard:hover{border-color:var(--dsw-alias-label-secondary);color:var(--dsw-alias-label-primary)}',
+      '.cpa-addplus{font-size:22px;line-height:1}',
+      '.cpa-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:1000}',
+      '.cpa-modal{background:var(--dsw-alias-bg-base,#1c1c1e);border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;padding:18px;max-width:520px;width:calc(100% - 48px);display:flex;flex-direction:column;gap:10px;box-shadow:0 16px 40px rgba(0,0,0,.4)}',
+      '.cpa-modal-title{font-size:14px;font-weight:600}',
+      '.cpa-modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}',
+      '.cpa-loginlink{font-size:11px;word-break:break-all;color:var(--dsw-alias-label-secondary)}',
       '.cpa-card{border:.5px solid var(--dsw-alias-border-l2);border-radius:10px;padding:12px}',
       '.cpa-card.sel{border-color:#2ea043}',
       '.cpa-card-head{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap}',

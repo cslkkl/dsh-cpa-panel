@@ -120,6 +120,41 @@ function writeStamp(value) {
   }
 }
 
+/**
+ * 「用户选择」的落地文件。
+ *
+ * 记的是**用户通过面板做出的启用/禁用决定**，而不是某时刻的实际状态 ——
+ * 这样重启后可以按用户的意图恢复，而不是被别的东西改过的状态带跑。
+ *
+ * 与补签记录分开存放：两者生命周期不同（补签按天重置，意图长期有效）。
+ */
+function accountIntentPath() {
+  return join(homedir(), '.dsh', 'storages', 'cpa-panel-accounts.json');
+}
+
+/** 读用户意图；损坏就当没有。 */
+function readAccountIntent() {
+  try {
+    const raw = readFileSync(accountIntentPath(), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return {};
+    return typeof parsed.enabled === 'object' && parsed.enabled !== null ? parsed : { enabled: {} };
+  } catch {
+    return { enabled: {} };
+  }
+}
+
+/** 写用户意图；失败不致命。 */
+function writeAccountIntent(value) {
+  try {
+    const p = accountIntentPath();
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify(value, null, 2), 'utf8');
+  } catch {
+    /* 写不进去只影响"重启后恢复"，不该打断用户当前操作 */
+  }
+}
+
 /** 本地日期串 YYYY-MM-DD。 */
 function localDay() {
   const d = new Date();
@@ -373,6 +408,54 @@ export async function apply(ctx, refs) {
     return { checkedIn: true, results };
   };
 
+      /**
+       * 按「用户上次的选择」恢复账号启用状态。
+       *
+       * ⚠️ 这个函数必须定义在 **`ctx.effect` 之外**（和 `runStartupCheckin` 同层）：
+       * 启动流程在 `ctx.effect` 里调用它，而 `ctx.inject([...])` 回调里的
+       * 同名定义是**另一个作用域**，外层看不见 —— 会报
+       * `restoreAccountIntent is not defined`（运行时才暴露，`node --check` 查不出）。
+       *
+       * 为什么需要它：CPA 的 `disabled` 本身能跨重启保留，但**别的操作**可能
+       * 改到它（用户自己在 CPA 控制台里点、或某个脚本探测后没还原）。
+       * 用户明确要求"我手动开哪个就只用哪个，重启 DSH 也不能变"，
+       * 所以启动时把记录过的意图**重新应用**一次。
+       *
+       * 只认**记录过的**账号：没记录过的一律不动 —— 新加入的号不该被
+       * 这个机制擅自禁用。
+       */
+      const restoreAccountIntent = async () => {
+        const intent = readAccountIntent();
+        const wanted = Object.entries(intent.enabled ?? {});
+        if (wanted.length === 0) return { skipped: 'no-intent' };
+
+        const running = await ensureRunning();
+        if (!running.running) return { skipped: 'cpa-unavailable' };
+        if (cachedAdminKey.value === '') return { skipped: 'no-admin-key' };
+
+        try {
+          const data = await cpaFetch(options(), '/v0/management/auth-files');
+          const byName = new Map(
+            (Array.isArray(data?.files) ? data.files : []).map((file) => [String(file.name), file]),
+          );
+          const fixed = [];
+          for (const [name, shouldEnable] of wanted) {
+            const file = byName.get(name);
+            if (file === undefined) continue; // 凭据已被删除，跳过
+            const currentlyDisabled = file.disabled === true;
+            if (currentlyDisabled === !shouldEnable) continue; // 已经一致
+            await cpaFetch(options(), '/v0/management/auth-files/status', {
+              method: 'PATCH',
+              body: JSON.stringify({ name, disabled: shouldEnable !== true }),
+            });
+            fixed.push({ name, enabled: shouldEnable === true });
+          }
+          return { restored: fixed };
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
+      };
+
   // ── 生命周期 effect ────────────────────────────────────────────────────
   ctx.effect(() => {
     let stopped = false;
@@ -380,6 +463,14 @@ export async function apply(ctx, refs) {
       const state = await ensureRunning();
       if (stopped) return;
       if (state.running) {
+        /**
+         * 先恢复「用户上次的选择」，再补签。
+         *
+         * 顺序有讲究：恢复要在补签之前 —— 补签是按渠道整体调的，
+         * 与具体账号无关；但先恢复能让日志反映真实的调度面。
+         */
+        const restored = await restoreAccountIntent();
+        ctx.logger?.info?.('cpa-panel: restore account intent %o', restored);
         const result = await runStartupCheckin();
         ctx.logger?.info?.('cpa-panel: startup checkin %o', result);
       } else {
@@ -833,7 +924,88 @@ export async function apply(ctx, refs) {
             method: 'PATCH',
             body: JSON.stringify({ name: target.name, disabled: enabled !== true }),
           });
+          /**
+           * 记下用户的决定，供下次启动恢复。
+           *
+           * 只有**用户主动点击**才会走到这里 —— 所以这是"用户意图"，
+           * 不是"某时刻的状态"。启动时按它恢复，就不会被别的东西改跑偏。
+           */
+          const intent = readAccountIntent();
+          intent.enabled[target.name] = enabled === true;
+          intent.updatedAt = new Date().toISOString();
+          writeAccountIntent(intent);
           return { ok: true, name: target.name, disabled: enabled !== true };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      };
+
+      /**
+       * 起一次渠道登录。
+       *
+       * 走 CPA 的 **v8** OAuth 接口（注意是 `/v8/`，不是 `/v0/`）。
+       * 返回上游授权页地址，用户在浏览器里完成授权后 CPA 会自动保存认证文件。
+       *
+       * 实测：
+       *   GET /v8/management/oauth/auth-url?provider=workbuddy
+       *   → {state, status:"ok", url:"https://copilot.tencent.com/login?..."}
+       */
+      const authStart = async (plugin) => {
+        const state = await ensureRunning();
+        if (!state.running) return { ok: false, error: 'cpa-unavailable' };
+        if (cachedAdminKey.value === '') return { ok: false, error: 'no-admin-key' };
+        if (!PLUGIN_ORDER.includes(plugin)) return { ok: false, error: 'unknown-provider' };
+        try {
+          const data = await cpaFetch(
+            options(),
+            `/v8/management/oauth/auth-url?provider=${encodeURIComponent(plugin)}`,
+          );
+          if (typeof data?.url !== 'string' || data.url === '') {
+            return { ok: false, error: data?.error ?? 'no-auth-url' };
+          }
+          return { ok: true, state: data.state, url: data.url };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      };
+
+      /**
+       * 查一次登录状态。
+       *
+       * ⚠️ **必须带 `state`**：不带时接口返回 `{"status":"ok"}` 这种无意义的值
+       * （实测），带 `state` 才返回真实进度。
+       *
+       * 实测取值：
+       *   `wait`  —— 等待授权中
+       *   （成功后 CPA 自动写入 auth 文件；取消后返回 `unknown or expired state`）
+       */
+      const authStatus = async (state) => {
+        if (typeof state !== 'string' || state === '') return { ok: false, error: 'missing-state' };
+        const running = await ensureRunning();
+        if (!running.running) return { ok: false, error: 'cpa-unavailable' };
+        try {
+          const data = await cpaFetch(
+            options(),
+            `/v8/management/oauth/status?state=${encodeURIComponent(state)}`,
+          );
+          return { ok: true, status: data?.status ?? 'unknown', raw: data };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      };
+
+      /** 取消一次登录会话（用户关掉弹窗时调）。 */
+      const authCancel = async (state) => {
+        if (typeof state !== 'string' || state === '') return { ok: false, error: 'missing-state' };
+        const running = await ensureRunning();
+        if (!running.running) return { ok: false, error: 'cpa-unavailable' };
+        try {
+          const data = await cpaFetch(
+            options(),
+            `/v8/management/oauth/session?state=${encodeURIComponent(state)}`,
+            { method: 'DELETE' },
+          );
+          return { ok: true, cancelled: data?.cancelled === true };
         } catch (error) {
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
@@ -921,6 +1093,27 @@ export async function apply(ctx, refs) {
           handle: async () => json(await schedulerModeNormalize()),
         },
         {
+          /**
+           * 添加账号（OAuth 登录）。
+           *
+           * - `GET  ?plugin=<渠道>`        起一次登录，返回 `{state, url}`
+           * - `GET  ?state=<state>`        查进度（`wait` / 完成 / 过期）
+           * - `DELETE ?state=<state>`      取消
+           *
+           * 前端拿到 `url` 后引导用户在浏览器完成授权即可 ——
+           * **不需要用户手动粘贴回调 URL**（本机模式下 CPA 自己收回调并保存凭据）。
+           */
+          path: '/api/v1/cpa/auth',
+          methods: ['GET', 'DELETE'],
+          handle: async (request) => {
+            const url = new URL(request.url);
+            const state = url.searchParams.get('state');
+            if (request.method === 'DELETE') return json(await authCancel(state ?? ''));
+            if (state !== null) return json(await authStatus(state));
+            return json(await authStart(url.searchParams.get('plugin') ?? ''));
+          },
+        },
+        {
           path: '/api/v1/cpa/priority',
           methods: ['GET', 'POST'],
           handle: async (request) => {
@@ -966,6 +1159,21 @@ export async function apply(ctx, refs) {
               body = {};
             }
             return json(await accountEnabled(body.plugin, body.authIndex, body.enabled === true));
+          },
+        },
+        {
+          /**
+           * 读 / 重新应用「用户上次的账号选择」。
+           *
+           * - `GET`  —— 返回记录下来的意图（给界面展示"记住的是哪些"）
+           * - `POST` —— 立即按意图恢复一次（正常情况下启动时已自动做过）
+           */
+          path: '/api/v1/cpa/account-intent',
+          methods: ['GET', 'POST'],
+          handle: async (request) => {
+            if (request.method === 'POST') return json({ ok: true, ...(await restoreAccountIntent()) });
+            const intent = readAccountIntent();
+            return json({ ok: true, enabled: intent.enabled ?? {}, updatedAt: intent.updatedAt });
           },
         },
         {

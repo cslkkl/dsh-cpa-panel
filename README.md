@@ -85,6 +85,25 @@ target: <本目录绝对路径>
 | `cordis.patch.yml` | 把本插件插入 profile 的 Loader 行 |
 | `locale/*.json` | 插件卡片标题与描述 |
 
+## 内部 HTTP 路由
+
+浏览器半端只调这些路由，**不带任何密钥**：
+
+| 路由 | 方法 | 作用 |
+|---|---|---|
+| `/api/v1/cpa/status` | GET | CPA 运行状态、端口、是否已配密钥 |
+| `/api/v1/cpa/plugins` | GET | 已装渠道列表与能力 |
+| `/api/v1/cpa/accounts?plugin=` | GET | 账号 + 余额 + 活跃账号 |
+| `/api/v1/cpa/action` | POST | `{plugin, kind, authIndex}` → 签到 / 任务 |
+| `/api/v1/cpa/account-enabled` | POST | `{plugin, authIndex, enabled}` → 启用 / 禁用账号 |
+| `/api/v1/cpa/account-intent` | GET/POST | 读 / 恢复「用户上次的账号选择」 |
+| `/api/v1/cpa/auth` | GET/DELETE | 起登录（`?plugin=`）/ 查进度（`?state=`）/ 取消 |
+| `/api/v1/cpa/auto-checkin` | GET/POST | 自动签到开关 |
+| `/api/v1/cpa/routing` | GET/POST | 路由策略 + 各渠道 `scheduler_mode` |
+| `/api/v1/cpa/scheduler-mode` | POST | 把各渠道 `scheduler_mode` 归一到 `off` |
+| `/api/v1/cpa/priority` | GET/POST | 账号使用顺序 |
+| `/api/v1/cpa/start` | POST | 手动拉起 CPA |
+
 ## 许可
 
 MIT
