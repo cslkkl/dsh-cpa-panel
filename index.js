@@ -28,6 +28,7 @@ import {
   SCHEDULER_MODE,
   normalizeAccounts,
 } from './adapters.js';
+import { managedExePath } from './setup.js';
 
 /** 本插件那一行的 Loader 条目 id —— 0.1.7 起它就是设置命名空间。 */
 export const ENTRY_ID = 'dsh-cpa-panel';
@@ -79,11 +80,17 @@ const DEFAULT_PORT = 8317;
  *
  * 都是**相对用户主目录**的通用位置，不含任何开发者私有路径 ——
  * 这个文件是会公开的，写死本机路径既无用又泄漏信息。
- * 找不到时由用户在配置项 `exePath` 里指定。
+ *
+ * ⚠️ 光靠这份清单**不够**：用户可能把 CPA 装在任意位置。所以还有
+ * `readExeMemory()` 记住"上次在哪找到的"，见 `resolveExe()`。
+ * 曾经的教训：为了公开发布删掉一条私有路径，却没补上别的来源，
+ * 结果插件找不到 exe、启不动 CPA，用户的服务直接断了。
  */
 function defaultExeCandidates() {
   const home = homedir();
   return [
+    // 由本插件「环境准备」下载并管理的副本
+    managedExePath(),
     join(home, 'CLIProxyAPI', 'cli-proxy-api.exe'),
     join(home, 'Desktop', 'CLIProxyAPI', 'cli-proxy-api.exe'),
     join(home, 'cpa', 'cli-proxy-api.exe'),
@@ -91,6 +98,39 @@ function defaultExeCandidates() {
     join(home, 'CLIProxyAPI', 'cli-proxy-api'),
     join(home, 'Desktop', 'CLIProxyAPI', 'cli-proxy-api'),
   ];
+}
+
+/**
+ * 「上次在哪找到 CPA」的落地文件。
+ *
+ * 用户可能把 CPA 装在任意目录（项目目录、别的盘……），静态候选清单
+ * 覆盖不到。所以**第一次成功解析后就把路径记下来**，以后优先用它 ——
+ * 这样换位置也不用重新配，更不会因为清单改动而突然找不到。
+ */
+function exeMemoryPath() {
+  return join(homedir(), '.dsh', 'storages', 'cpa-panel-exe.json');
+}
+
+/** 读「上次找到的 CPA 路径」；损坏或不存在返回空串。 */
+function readExeMemory() {
+  try {
+    const parsed = JSON.parse(readFileSync(exeMemoryPath(), 'utf8'));
+    const path = typeof parsed?.path === 'string' ? parsed.path : '';
+    return existsSync(path) ? path : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 记住这次找到的路径；失败不致命。 */
+function writeExeMemory(path) {
+  try {
+    const p = exeMemoryPath();
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify({ path, at: new Date().toISOString() }, null, 2), 'utf8');
+  } catch {
+    /* 记不住只影响下次启动的快慢，不该打断本次启动 */
+  }
 }
 
 /** 补签记录的落地文件（放 DSH home 下）。 */
@@ -296,12 +336,27 @@ export async function apply(ctx, refs) {
     starting: false,
   };
 
-  /** 解析可执行文件路径。 */
+  /**
+   * 解析可执行文件路径，优先级：
+   *  1. 用户显式配置的 `exePath`（最高，用户说了算）
+   *  2. **上次成功找到的路径**（跨重启记忆，静态清单覆盖不到的装法靠它）
+   *  3. 内置候选清单（含插件自己下载管理的那份）
+   *
+   * 找到后立刻记下来，下次启动直接从第 2 步命中。
+   */
   const resolveExe = () => {
     const configured = readConfig().exePath.trim();
-    if (configured !== '' && existsSync(configured)) return configured;
+    if (configured !== '' && existsSync(configured)) {
+      writeExeMemory(configured);
+      return configured;
+    }
+    const remembered = readExeMemory();
+    if (remembered !== '') return remembered;
     for (const candidate of defaultExeCandidates()) {
-      if (existsSync(candidate)) return candidate;
+      if (existsSync(candidate)) {
+        writeExeMemory(candidate);
+        return candidate;
+      }
     }
     return '';
   };
