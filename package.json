@@ -1,0 +1,51 @@
+{
+  "name": "dsh-cpa-panel",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DeepSeek Harness 插件：在 DSH 里管理 CLIProxyAPI 的账号 —— 余额、签到、任务、切换账号，并让 CPA 随 DSH 启停。",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cliproxyapi",
+    "cpa",
+    "plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cslkkl/dsh-cpa-panel.git"
+  },
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "adapters.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale/*.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-credentials": ">=0.1.7-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  }
+}

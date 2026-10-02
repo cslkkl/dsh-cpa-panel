@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "CPA 中转站面板",
+    "description": "在设置里管理 CPA（CLIProxyAPI）的账号：看余额、一键签到、跑任务、切账号，并让 CPA 随 DSH 自动启停。"
+  }
+}
