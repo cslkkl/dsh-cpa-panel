@@ -2,10 +2,6 @@
 # 不属于本项目源码，绝不能提交。
 node_modules/
 
-# 维护者本地文档：写给我自己的规则，含仓库外引用与私有路径，
-# 不适合公开（npm 的 files 白名单里也不含它）。
-AGENTS.md
-
 # 编辑器 / 系统噪音
 .DS_Store
 Thumbs.db
