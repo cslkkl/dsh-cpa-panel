@@ -167,29 +167,43 @@ function writeStamp(value) {
  * 这样重启后可以按用户的意图恢复，而不是被别的东西改过的状态带跑。
  *
  * 与补签记录分开存放：两者生命周期不同（补签按天重置，意图长期有效）。
+ *
+ * ⚠️ **只在用户点击面板时写入**。曾经由测试脚本手写这个文件，
+ * 结果每次重启都把账号状态改成测试留下的样子（见
+ * [决策记录](../../.agents/notes/remember-account-choice-2026-10-02.md)）。
+ * 现在带 `source` 字段标明写入方，`source !== 'panel'` 的不参与恢复。
  */
 function accountIntentPath() {
   return join(homedir(), '.dsh', 'storages', 'cpa-panel-accounts.json');
 }
 
-/** 读用户意图；损坏就当没有。 */
+/** 读用户意图；损坏、缺 source、或来源不是面板，一律当没有。 */
 function readAccountIntent() {
   try {
     const raw = readFileSync(accountIntentPath(), 'utf8');
     const parsed = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null) return {};
-    return typeof parsed.enabled === 'object' && parsed.enabled !== null ? parsed : { enabled: {} };
+    if (typeof parsed !== 'object' || parsed === null) return { enabled: {} };
+    if (typeof parsed.enabled !== 'object' || parsed.enabled === null) return { enabled: {} };
+    /**
+     * **只认面板写的**。
+     *
+     * 恢复账号状态是"改用户的东西"，代价高；所以宁可什么都不做，
+     * 也不能拿一个来源不明的文件去覆盖用户的现状。
+     * 老版本写的文件没有 `source` 字段，同样不认。
+     */
+    if (parsed.source !== 'panel') return { enabled: {}, ignored: 'untrusted-source' };
+    return parsed;
   } catch {
     return { enabled: {} };
   }
 }
 
-/** 写用户意图；失败不致命。 */
+/** 写用户意图。`source` 固定为 panel，只有面板的点击能产生。 */
 function writeAccountIntent(value) {
   try {
     const p = accountIntentPath();
     mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, JSON.stringify(value, null, 2), 'utf8');
+    writeFileSync(p, JSON.stringify({ ...value, source: 'panel' }, null, 2), 'utf8');
   } catch {
     /* 写不进去只影响"重启后恢复"，不该打断用户当前操作 */
   }
@@ -486,9 +500,16 @@ export async function apply(ctx, refs) {
        *
        * 只认**记录过的**账号：没记录过的一律不动 —— 新加入的号不该被
        * 这个机制擅自禁用。
+       *
+       * ⚠️ 只认 `source === 'panel'` 的意图文件（见 `readAccountIntent`）。
+       * 这个机制曾经出过事故：测试脚本手写了意图文件，之后每次重启都
+       * 把账号状态改成测试留下的样子 —— 用户看到的是"我没动，怎么又变了"。
+       * 恢复账号状态是"改用户的东西"，宁可什么都不做也不能拿来源不明的
+       * 文件去覆盖现状。
        */
       const restoreAccountIntent = async () => {
         const intent = readAccountIntent();
+        if (intent.ignored !== undefined) return { skipped: intent.ignored };
         const wanted = Object.entries(intent.enabled ?? {});
         if (wanted.length === 0) return { skipped: 'no-intent' };
 
@@ -512,6 +533,10 @@ export async function apply(ctx, refs) {
               body: JSON.stringify({ name, disabled: shouldEnable !== true }),
             });
             fixed.push({ name, enabled: shouldEnable === true });
+          }
+          /** 有实际改动才值得记日志 —— 没改动是常态，别刷屏。 */
+          if (fixed.length > 0) {
+            ctx.logger?.info?.('cpa-panel: 按用户选择恢复了 %d 个账号 %o', fixed.length, fixed);
           }
           return { restored: fixed };
         } catch (error) {
