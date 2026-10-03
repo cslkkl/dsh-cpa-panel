@@ -142,7 +142,7 @@
 **关键观察：两者对用户承诺的「结果」是等价的 —— 都是"绝不自动换号"。**
 差别在**机制硬度**与**实现代价**。
 
-- 现状方案的硬度由 `ARCHITECTURE.md §4.4` 论证过：只有 `disabled` 是"根本不参与"，
+- 现状方案的硬度由 [ARCHITECTURE.md](ARCHITECTURE.md) §4.4 论证过：只有 `disabled` 是"根本不参与"，
   `priority` / `fill-first` 都会降级 —— 所以现状**已经满足"绝不偷偷顶替"**
 - 方案甲要额外承担：**改上游 fork + G1 写端点未定义 + 每单元 key 注入通道未定**
 
@@ -170,7 +170,7 @@
 | `node --check` 查不出作用域错误与契约违规 | `dsh-cpa-switch/AGENTS.md` 明写 | TS 的类型检查**也查不出运行时契约违规** |
 | 删资源探测来源必须补兜底并验证冷启动 | [事故记录](../../.agents/notes/incident-exe-discovery-2026-10-03.md)：**用户服务直接中断** | S1 删模块、S3 换 dll 都是这类改动 |
 | 探测脚本必须还原运行前状态 | `AGENTS.md` 活跃坑：曾把用户手动禁用的号全启用 | 新验证脚本会重犯 |
-| 插件必须是 profile 下**真实目录**，不能 `link:` | `ARCHITECTURE.md` F1 | TS 化改构建产物会碰这个 |
+| 插件必须是 profile 下**真实目录**，不能 `link:` | [ARCHITECTURE.md](ARCHITECTURE.md) F1 | TS 化改构建产物会碰这个 |
 
 **结论**：S0–S7 会**同时踩中全部这些坑**，而蓝图一条都没预警。
 
