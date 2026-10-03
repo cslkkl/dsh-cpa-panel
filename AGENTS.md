@@ -50,7 +50,7 @@ python check-line-endings.py <本仓根> --target lf
 - **`0.1.2` 已发布并通过真实用户路径验收**：在完全隔离的环境里
   `dsh plugin --profile accept-web add dsh-cpa-switch` → 插件自动下载 CPA、生成密钥、
   拉起服务 → 面板显示「运行中」、四个渠道页签齐全，五个渠道的账号接口全部 200。
-  复跑步骤见工作区根 `../AGENTS.md` 的「常用命令」。
+  复跑步骤见[工作区根 AGENTS.md](../AGENTS.md) 的「常用命令」。
 - 改动 `index.js` / `adapters.js` / `setup.js` 后必须人工重启 DSH 复核，
   不要只看退出码 —— ESM 按 URL 缓存，不重启跑的还是旧副本。
 
