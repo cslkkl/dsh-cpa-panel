@@ -78,7 +78,7 @@ target: <本目录绝对路径>
   只有禁用是"根本不参与"。面板的「选择」做的就是这件事。
 - **被限流的号看不出异常**：上游有模型级限流（code 6004），被限的号 CPA 仍显示
   `status: active`，只有实际发请求才暴露。面板显示"启用"不等于"这个号现在能用"。
-- **host 半端改动需要重启 DSH**：`index.js` / `adapters.js` 不会热重载；
+- **host 半端改动需要重启 DSH**：`index.js` / `adapters.js` / `setup.js` 不会热重载；
   `client.js` 相反，刷新页面即可。
 
 ## 文件
@@ -92,6 +92,18 @@ target: <本目录绝对路径>
 | `cordis.patch.yml` | 把本插件插入 profile 的 Loader 行 |
 | `locale/*.json` | 插件卡片标题与描述 |
 
+## 变更影响路由
+
+| 改动 | 必须同步 |
+|---|---|
+| 任何源码改动 | `node ../scripts/sync-plugin.mjs` |
+| 路由增删改 | **先跑** `node ../scripts/check-routes.mjs`，再改下面的路由表 |
+| `index.js` / `adapters.js` / `setup.js` | **重启 DSH**（ESM 缓存，GUI 重挂载不够） |
+| `client.js` | 刷新页面即可 |
+| 四渠道差异 | 本文件 + [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) 差异表 |
+| 配置项增删 | 本文件配置项列表 |
+| 新增踩坑 | [AGENTS.md](AGENTS.md) 活跃坑；跨模块的写 [../AGENTS.md](../AGENTS.md) |
+
 ## 内部 HTTP 路由
 
 浏览器半端只调这些路由，**不带任何密钥**：
@@ -99,18 +111,25 @@ target: <本目录绝对路径>
 | 路由 | 方法 | 作用 |
 |---|---|---|
 | `/api/v1/cpa/status` | GET | CPA 运行状态、端口、是否已配密钥 |
+| `/api/v1/cpa/setup` | GET/POST | 环境状态 / 一键下载 CPA 与渠道插件 |
 | `/api/v1/cpa/plugins` | GET | 已装渠道列表与能力 |
-| `/api/v1/cpa/accounts?plugin=` | GET | 账号 + 余额 + 活跃账号 |
+| `/api/v1/cpa/accounts?plugin=` | GET | 账号 + 余额 |
+| `/api/v1/cpa/models?plugin=` | GET | 模型目录（只读展示） |
+| `/api/v1/cpa/school?plugin=` | GET | 成长中心 |
 | `/api/v1/cpa/action` | POST | `{plugin, kind, authIndex}` → 签到 / 任务 |
 | `/api/v1/cpa/account-select` | POST | `{plugin, authIndex}` → **选择账号**（启用它，同渠道其余自动禁用） |
 | `/api/v1/cpa/account-enabled` | POST | `{plugin, authIndex, enabled}` → 单个启用 / 禁用 |
 | `/api/v1/cpa/account-intent` | GET/POST | 读 / 恢复「用户上次的账号选择」 |
-| `/api/v1/cpa/auth` | GET/DELETE | 起登录（`?plugin=`）/ 查进度（`?state=`）/ 取消 |
+| `/api/v1/cpa/auth` | GET/POST | 起登录（`?plugin=`）/ 查进度（`?state=`）/ 取消（POST + `{action,state}`） |
 | `/api/v1/cpa/auto-checkin` | GET/POST | 自动签到开关 |
 | `/api/v1/cpa/routing` | GET/POST | 路由策略 + 各渠道 `scheduler_mode` |
 | `/api/v1/cpa/scheduler-mode` | POST | 把各渠道 `scheduler_mode` 归一到 `off` |
-| `/api/v1/cpa/priority` | GET/POST | 账号使用顺序 |
+| `/api/v1/cpa/priority` | GET/POST | 账号使用顺序（面板已无 UI，脚本用） |
 | `/api/v1/cpa/start` | POST | 手动拉起 CPA |
+
+**改路由前必读**：同一 `path` 只能注册一次（多方法合并在一个条目里）、
+方法只有 `GET`/`HEAD`/`POST`。违反任一条会让**所有**路由失效。
+改完跑 `node ../scripts/check-routes.mjs`。
 
 ## 许可
 
