@@ -1,5 +1,5 @@
 /**
- * dsh-cpa-panel —— 宿主半边。
+ * dsh-cpa-switch —— 宿主半边。
  *
  * 三件事，按依赖顺序：
  *  1. **生命周期**：随 DSH 启停 CLIProxyAPI（复用已在跑的实例，退出时只关自己启的）。
@@ -10,7 +10,7 @@
  *  - 管理密钥能控制整个代理，绝不下发到浏览器；
  *  - 子进程必须清空 HTTP_PROXY 等变量，否则请求 127.0.0.1 会被系统代理拦成 502；
  *  - Windows 上子进程默认不随父进程退出，所以清理要显式 kill。
- * @module dsh-cpa-panel
+ * @module dsh-cpa-switch
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -28,10 +28,16 @@ import {
   SCHEDULER_MODE,
   normalizeAccounts,
 } from './adapters.js';
-import { managedExePath, inspect as inspectSetup, prepare as prepareSetup } from './setup.js';
+import {
+  generateSecretKey,
+  managedExePath,
+  readSecretKeyFromConfig,
+  inspect as inspectSetup,
+  prepare as prepareSetup,
+} from './setup.js';
 
 /** 本插件那一行的 Loader 条目 id —— 0.1.7 起它就是设置命名空间。 */
-export const ENTRY_ID = 'dsh-cpa-panel';
+export const ENTRY_ID = 'dsh-cpa-switch';
 
 /** loader 诊断用的插件名。 */
 export const name = 'cpa-panel';
@@ -192,7 +198,23 @@ function readAccountIntent() {
      * 老版本写的文件没有 `source` 字段，同样不认。
      */
     if (parsed.source !== 'panel') return { enabled: {}, ignored: 'untrusted-source' };
-    return parsed;
+    /**
+     * ⚠️ **绝不把文件里的 `ignored` 透传出去。**
+     *
+     * `ignored` 是「读」这一步的**内部信号**（表示"这份文件不可信、别用"），
+     * 不是磁盘 schema 的一部分。但它可序列化 —— 一旦被写进文件
+     * （旧版本代码、或某个脚本把 `readAccountIntent()` 的结果原样回写），
+     * 就会**永久**卡死恢复流程：
+     *
+     *   读出来带着 `ignored` → 恢复函数见 `ignored` 就跳过 → 永远不恢复
+     *
+     * 用户看到的是「我明明选过了，怎么每次都变回去」，而文件内容
+     * 看起来一切正常、`source` 也是对的 —— 极难排查。
+     * 所以这里显式剥掉，让 `ignored` 只可能来自上面那行返回值。
+     */
+    const intent = { ...parsed };
+    delete intent.ignored;
+    return intent;
   } catch {
     return { enabled: {} };
   }
@@ -334,6 +356,61 @@ export async function apply(ctx, refs) {
     }
   };
 
+  /**
+   * 把密钥存进 DSH 凭据库。
+   *
+   * ⚠️ **必须自己存一份明文**，不能只依赖回读 `config.yaml`：
+   * CPA 启动时会把配置里的明文 bcrypt 哈希后写回原文件，之后那个文件里的值
+   * 就不再是可用令牌了（实测 401，详见 `setup.js` 的 `readSecretKeyFromConfig`）。
+   * 凭据库是宿主的加密存储，密钥全程只在宿主侧流转，不下发浏览器（架构 §4.1）。
+   *
+   * 凭据引用可能被只读来源（如同名环境变量）遮蔽而拒绝写入 —— 这时
+   * 静默失败即可：本轮内存里仍有可用密钥，只是下次启动要重新解析。
+   *
+   * @returns 存成功了没有。
+   */
+  const persistAdminKey = async (key) => {
+    const ref = readConfig().adminKeyRef.trim();
+    if (ref === '') return false;
+    try {
+      await ctx.credentials.set(credentialRef(ref), key);
+      return true;
+    } catch (error) {
+      ctx.logger?.warn?.('cpa-panel: persist admin key failed: %o', error);
+      return false;
+    }
+  };
+
+  /**
+   * 首次自动安装用的密钥。
+   *
+   * 用户装完插件什么都没配，`resolveAdminKey()` 必然返回空 —— 但自动安装
+   * 必须先有密钥才能生成配置。这里按「沿用优先」取值：
+   *
+   *  1. 已解析到的密钥（显式配置 / 凭据库）→ 直接用；
+   *  2. 托管配置里还有**明文** → 沿用，并补存进凭据库
+   *     （老版本只写了 config.yaml，升级上来时得把它迁进凭据库，
+   *     否则下次 CPA 把明文哈希掉之后就再也取不回来了）；
+   *  3. 都没有 → 新造一个，**立刻存进凭据库**。
+   *
+   * 第 3 步的「立刻存」是关键：只写进 config.yaml 的话，CPA 一启动就把它
+   * 哈希掉了，下次读回来是哈希、不是令牌 —— 那正是「重启一次就永久失联」
+   * 这个缺陷的成因。
+   *
+   * 只写托管目录与宿主凭据库，**不下发浏览器**（架构 §4.1）。
+   */
+  const ensureAutoInstallKey = async () => {
+    if (cachedAdminKey.value !== '') return cachedAdminKey.value;
+    const legacy = readSecretKeyFromConfig();
+    if (legacy !== '') {
+      await persistAdminKey(legacy);
+      return legacy;
+    }
+    const fresh = generateSecretKey();
+    await persistAdminKey(fresh);
+    return fresh;
+  };
+
   // 密钥在启动时解析一次留作缓存；凭据轮换会在下一次 apply/重启生效。
   let cachedAdminKey = await resolveAdminKey();
 
@@ -355,8 +432,13 @@ export async function apply(ctx, refs) {
    *
    * `running` 用来挡住并发触发 —— 下载要几十秒，用户很容易连点
    * 两次「准备环境」，两个流程同时写同一个目录会互相踩。
+   *
+   * `progress` 是给前端轮询看的最近一步。整个下载约 40 MB、实测 96 秒，
+   * 期间不报进度用户会以为卡死（见 PLAN 待办「环境准备的进度反馈」）。
+   * 形状就是 `setup.js` 里 `onStep` 收到的那个对象，**原样透传不加工**，
+   * 免得两边字段各叫各的。
    */
-  const setup = { running: false };
+  const setup = { running: false, progress: undefined };
 
   /**
    * 解析可执行文件路径，优先级：
@@ -371,6 +453,22 @@ export async function apply(ctx, refs) {
     if (configured !== '' && existsSync(configured)) {
       writeExeMemory(configured);
       return configured;
+    }
+    /**
+     * **托管副本优先于「上次找到的路径」。**
+     *
+     * 托管那份的 `config.yaml` 与密钥都由本插件掌握；别人的安装哪怕
+     * 曾经成功找到过，密钥也未必取得到 —— 拿不到密钥就是 401、面板全空，
+     * 表现为「插件用不了」而日志里只有一句鉴权失败。
+     *
+     * 候选清单里 `managedExePath()` 本来就排在第一位，这里只是让它
+     * **真正生效**：否则一条旧记忆就能把插件永远钉在一份它管不了的安装上，
+     * 用户装完插件永远等不到自动接管。
+     */
+    const managed = managedExePath();
+    if (existsSync(managed)) {
+      writeExeMemory(managed);
+      return managed;
     }
     const remembered = readExeMemory();
     if (remembered !== '') return remembered;
@@ -547,8 +645,86 @@ export async function apply(ctx, refs) {
   // ── 生命周期 effect ────────────────────────────────────────────────────
   ctx.effect(() => {
     let stopped = false;
+
+    /**
+     * 首次运行的自动安装。
+     *
+     * 目标：用户装完插件什么都不用点，CPA 自己就装好、配好、跑起来。
+     *
+     * ⚠️ **只在「环境为空」时动手**（见 [inspectSetup] 的 `missing`）：
+     *   - 已经有 exe → 走 [ensureRunning] 复用，**绝不覆盖**；
+     *   - 只缺渠道插件（有 exe、dll 数 0）→ 补齐插件即可，不重下 exe。
+     *
+     * 这条判断是硬约束：删掉探测来源却漏了兜底，曾导致**启不动 CPA、
+     * 用户服务直接中断**（见 .agents/notes/incident-exe-discovery-2026-10-03.md）。
+     *
+     * @returns 装成功了没有。
+     */
+    const autoInstallIfNeeded = async () => {
+      const config = readConfig();
+      const state = inspectSetup({ port: config.port, secretKey: cachedAdminKey.value });
+      if (state.ok) return false;
+
+      /**
+       * 用的是 `ensureAutoInstallKey()` 而不是 `cachedAdminKey.value` ——
+       * 首次安装时后者必然是空，直接传会立刻 `no-admin-key` 卡死，
+       * 自动安装就成了摆设。
+       */
+      const secretKey = await ensureAutoInstallKey();
+      ctx.logger?.info?.('cpa-panel: auto install starting (missing: %o)', state.missing);
+      const result = await prepareSetup({ port: config.port, secretKey });
+      ctx.logger?.info?.('cpa-panel: auto install %s', result.ok ? 'ok' : `failed (${result.phase}: ${result.error})`);
+
+      /**
+       * 装完把密钥缓存回填。不回填的话，后续路由仍以为「没密钥」，
+       * 会出现「装好了但面板处处报 no-admin-key」的怪状态。
+       */
+      if (result.ok && cachedAdminKey.value === '') {
+        cachedAdminKey = { value: secretKey, source: 'auto-install' };
+      }
+      return result.ok === true;
+    };
+
     const boot = async () => {
-      const state = await ensureRunning();
+      /**
+       * **先补环境，再启动** —— 顺序不能反。
+       *
+       * `ensureRunning()` 只要 exe 存在就会把 CPA 拉起来，而**没有配置的 CPA
+       * 照样会监听端口**：`waitForPort` 一旦成功，`state.running` 就为真，
+       * 「环境不全」这个事实随即被掩盖，配置再也补不回来 —— 表现为管理接口
+       * 401/404、面板全空，而日志里只有一句「CPA unavailable」甚至什么都没有。
+       *
+       * 三个前提同时满足才补装（少一个都不动手）：
+       *  - 端口空闲（已有 CPA 在跑就复用，绝不打扰）；
+       *  - 生命周期没被用户关掉（关了就是显式不要这个能力，动手属越权）；
+       *  - 缺件清单非空（`exe` / `plugins` / `config` 任一缺失）。
+       *
+       * `prepare()` 只补缺件、绝不覆盖已有 exe/dll，所以放它进来是安全的。
+       */
+      const preflight = readConfig();
+      const portBusy = await probePort(preflight.port);
+      const missing = inspectSetup({ port: preflight.port }).missing;
+      if (!portBusy && preflight.manageLifecycle && missing.length > 0) {
+        ctx.logger?.info?.('cpa-panel: environment incomplete (%o), preparing before start', missing);
+        await autoInstallIfNeeded();
+        if (stopped) return;
+      }
+
+      let state = await ensureRunning();
+      if (stopped) return;
+
+      /**
+       * 补装之后仍然缺 exe（下载失败、或首次就跑到了这里）→ 再试一次。
+       *
+       * 保留这条兜底是因为 `prepare()` 可能部分失败：渠道插件装上了、
+       * exe 没装上。此时上面的 preflight 已经放过，得靠这里再兜一次。
+       */
+      if (!state.running && state.reason === 'exe-not-found') {
+        const installed = await autoInstallIfNeeded();
+        if (stopped) return;
+        if (installed) state = await ensureRunning();
+      }
+
       if (stopped) return;
       if (state.running) {
         /**
@@ -1161,7 +1337,7 @@ export async function apply(ctx, refs) {
            * 中断、**所有路由都注册不上**。曾因此让插件完全不可用。
            *
            * POST 要下载约 40 MB、耗时实测 96 秒，所以同步跑完再返回；
-           * 进度靠 `setup.running` 这个状态让前端轮询 `GET` 看到。
+           * 进度靠 `setup.running` / `setup.progress` 让前端轮询 `GET` 看到。
            */
           path: '/api/v1/cpa/setup',
           methods: ['GET', 'POST'],
@@ -1171,21 +1347,36 @@ export async function apply(ctx, refs) {
               return json({
                 ok: true,
                 running: setup.running,
+                progress: setup.progress,
                 ...inspectSetup({ port: config.port, secretKey: cachedAdminKey.value }),
               });
             }
 
-            const secretKey = cachedAdminKey.value;
-            if (secretKey === '') {
-              /* 没有管理密钥就生不出可用配置 —— 先让用户配密钥 */
-              return json({ ok: false, error: 'no-admin-key' });
-            }
+            /**
+             * 密钥优先取缓存；缓存空则现造一个。
+             *
+             * 缓存空有两种情况：真没配（首次自动安装），或自动安装刚跑完
+             * 但没回填。两种都该在现场造密钥，而不是把用户顶回去配。
+             */
+            const secretKey = cachedAdminKey.value !== '' ? cachedAdminKey.value : await ensureAutoInstallKey();
             if (setup.running) return json({ ok: false, error: 'already-running' });
             setup.running = true;
+            setup.progress = { phase: 'starting' };
             try {
-              const result = await prepareSetup({ port: config.port, secretKey });
+              const result = await prepareSetup({
+                port: config.port,
+                secretKey,
+                onStep: (step) => {
+                  setup.progress = step;
+                },
+              });
               /* 装完就把记忆指向托管的那份，省得下次还要探测 */
-              if (result.ok) writeExeMemory(managedExePath());
+              if (result.ok) {
+                writeExeMemory(managedExePath());
+                if (cachedAdminKey.value === '') {
+                  cachedAdminKey = { value: secretKey, source: 'auto-install' };
+                }
+              }
               return json(result);
             } catch (error) {
               return json({
@@ -1194,6 +1385,7 @@ export async function apply(ctx, refs) {
               });
             } finally {
               setup.running = false;
+              setup.progress = undefined;
             }
           },
         },

@@ -23,7 +23,7 @@
  * `/credits` 有三种写法：
  *  - workbuddy / qoder / zcode: `{accounts:[{auth_index, credits:{packages,total_*}}]}`
  *  - trae:                      `{provider, results:[{auth_index, credits_pool_remain, checked_in, ...}]}`
- * @module dsh-cpa-panel/adapters
+ * @module dsh-cpa-switch/adapters
  */
 
 /**

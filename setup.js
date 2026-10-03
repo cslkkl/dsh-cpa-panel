@@ -15,9 +15,9 @@
  *  3. 校验 sha256 后才解压（网络下载的东西不能盲信）。
  *  4. 解压用系统 `tar`（Windows 10+ 自带 bsdtar，能解 zip）——
  *     不引入 zip 依赖，插件保持零 npm 依赖。
- * @module dsh-cpa-panel/setup
+ * @module dsh-cpa-switch/setup
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -27,12 +27,18 @@ import { spawn } from 'node:child_process';
  * 各平台的下载源。
  *
  * `asset` 里的 `{version}` 会被替换成实际 tag 去掉 `v` 前缀的版本号。
+ *
+ * ⚠️ **CPA 本体可切到自家 Release**（见 `cpaOwner`）。
+ * 官方源发的是「全家桶」；自建源发的是按需编译的版本。切换只改这一个常量，
+ * 但**自建源必须先真的存在 Release**，否则用户装插件时会卡在下载这一步
+ * —— 没有兜底，就是又一次「启不动 CPA」。
  */
+const cpaOwner = 'router-for-me';
 export const SOURCES = {
   cpa: {
-    repo: 'router-for-me/CLIProxyAPI',
+    repo: `${cpaOwner}/CLIProxyAPI`,
     /** 取 latest release 的 API。 */
-    latestApi: 'https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest',
+    latestApi: `https://api.github.com/repos/${cpaOwner}/CLIProxyAPI/releases/latest`,
     assetPattern: /^CLIProxyAPI_[\d.]+_windows_amd64\.zip$/u,
     /** 解压后要找的可执行文件名。 */
     exeName: 'cli-proxy-api.exe',
@@ -78,6 +84,32 @@ export function managedPluginsDir() {
 }
 
 /**
+ * 需要显式启用的渠道插件。
+ *
+ * ⚠️ **`plugins.enabled: true` 不等于"渠道能用"。**
+ *
+ * 上游对每个渠道是**逐个**判定启用的，而且默认值是 `false`：
+ *
+ * ```go
+ * // Enabled toggles this plugin instance. Nil is normalized to false during YAML parsing.
+ * Enabled *bool `yaml:"enabled,omitempty"`
+ * ...
+ * defaultEnabled := false
+ * c.Enabled = &defaultEnabled
+ * ```
+ *
+ * 少了这一段，`plugins/` 下的 dll 会**全部处于未激活状态**，
+ * 于是 `/v0/management/plugins/<id>/accounts` 一律 404 ——
+ * 面板表现是「读取失败：HTTP 404」，而 CPA 本身跑得好好的、
+ * `auth-files` 也读得到，**极容易误判成插件坏了**。
+ *
+ * 这份清单与渠道插件包（`mmqz/cpa-multi-plugins`）实际提供的 dll 对应。
+ * 多写一个不存在的 id 无害（CPA 只是没有对应该实例）；
+ * 少写一个的后果则是那个渠道静默不可用。
+ */
+const CHANNEL_PLUGINS = ['workbuddy', 'trae', 'qoder', 'zcode', 'mimo'];
+
+/**
  * 生成一份最小可用的 `config.yaml`。
  *
  * 只写**必须**的项，其余交给 CPA 的默认值 —— 配置越短，越不容易随
@@ -87,11 +119,17 @@ export function managedPluginsDir() {
  *  - `management.secret-key` 必须设，否则管理接口无鉴权（本插件也调不通）；
  *  - `oauth.auth-dir` **指向用户原有的 `~/.cli-proxy-api`** —— 这样别人
  *    本来就用着 CPA 时，新装的这份能直接看到已有账号，不用重新加号；
- *  - `plugins.enabled: true` + `dir: "plugins"`，配合上面的目录布局生效。
+ *  - `plugins.enabled: true` + `dir: "plugins"` 让插件机制生效；
+ *  - `plugins.configs.<渠道>.enabled: true` **逐个**启用渠道，
+ *    见 [CHANNEL_PLUGINS] 的说明 —— 漏了这段渠道就全不工作。
  */
 export function renderConfig({ port, secretKey }) {
+  const channelLines = CHANNEL_PLUGINS.flatMap((id) => [
+    `    ${id}:`,
+    '      enabled: true',
+  ]);
   return [
-    '# 由 dsh-cpa-panel 自动生成 —— 手改会在下次「重新准备环境」时被覆盖。',
+    '# 由 dsh-cpa-switch 自动生成 —— 手改会在下次「重新准备环境」时被覆盖。',
     'config-version: 8',
     '',
     'server:',
@@ -106,6 +144,8 @@ export function renderConfig({ port, secretKey }) {
     'plugins:',
     '  enabled: true',
     '  dir: "plugins"',
+    '  configs:',
+    ...channelLines,
     '',
   ].join('\n');
 }
@@ -121,6 +161,58 @@ export function writeConfig(content) {
   }
 }
 
+/**
+ * 生成管理密钥。
+ *
+ * 首次自动安装时用 —— 用户什么都不知道，插件得自己造一个能用的密钥出来。
+ *
+ * **只在「全新安装」路径上调用**：已有配置的机器走 [readSecretKeyFromConfig]，
+ * 绝不重新生成（换了密钥等于把用户原来配好的所有写操作全打断）。
+ *
+ * 32 字节 base64url ≈ 43 个字符，无 `+/=`，可安全塞进 YAML 双引号串。
+ */
+export function generateSecretKey() {
+  return randomBytes(32).toString('base64url');
+}
+
+/** 是否长得像 bcrypt 哈希。CPA 会把配置里的明文换成这个形态。 */
+export function looksLikeBcrypt(value) {
+  return /^\$2[aby]?\$\d{2}\$/.test(String(value ?? ''));
+}
+
+/**
+ * 从已有配置文件里读回管理密钥。
+ *
+ * 为什么要有这个：自动安装的触发条件是「找不到 exe」，但**配置可能还在**
+ * （用户删了 exe 保留配置、或换了目录）。这时候必须沿用原密钥 ——
+ * 重新生成会让配置文件里那个旧密钥对不上，本插件后续所有写操作 401。
+ *
+ * ⚠️ **只认明文；读到哈希一律当没读到。**
+ *
+ * CPA 启动时会把配置里的明文密钥 bcrypt 哈希后**写回同一个文件**
+ * （见上游 `internal/config/config_load.go` 的
+ * `SaveConfigPreserveCommentsUpdateNestedScalar`）。那个 `$2a$10$…`
+ * 是**校验用的哈希，不是可用的令牌** —— 实测拿它当 Bearer token
+ * 请求管理接口必然 401。
+ *
+ * 所以这里必须把哈希挡掉：否则插件会拿到一个「看起来有密钥、实际必定失败」
+ * 的值，表现为**用户重启一次 CPA 后插件就永久失联**，而报错只显示 401，
+ * 完全看不出根因。挡掉之后调用方会走「用凭据库持久化的密钥」那条路。
+ *
+ * 只做最朴素的正则提取，不引 YAML 解析器（插件保持零依赖）。
+ * @returns 明文密钥；读不到、或只读到哈希时返回空串。
+ */
+export function readSecretKeyFromConfig() {
+  try {
+    const content = readFileSync(managedConfigPath(), 'utf8');
+    const matched = /^\s*secret-key:\s*"?([^"\n\r]+)"?\s*$/mu.exec(content);
+    const value = matched?.[1]?.trim() ?? '';
+    return looksLikeBcrypt(value) ? '' : value;
+  } catch {
+    return '';
+  }
+}
+
 /** 把字节数说成人话。 */
 export function humanSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '—';
@@ -131,7 +223,7 @@ export function humanSize(bytes) {
 /** 查 latest release 里符合模式的资产。 */
 export async function findAsset(source) {
   const response = await fetch(source.latestApi, {
-    headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-cpa-panel' },
+    headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-cpa-switch' },
     signal: AbortSignal.timeout(30000),
   });
   if (!response.ok) throw new Error(`release 查询失败：HTTP ${String(response.status)}`);
@@ -150,12 +242,12 @@ export async function findAsset(source) {
 
 /** 下载到临时文件，返回路径与 sha256。 */
 export async function download(asset, onProgress) {
-  const dir = join(tmpdir(), 'dsh-cpa-panel-dl');
+  const dir = join(tmpdir(), 'dsh-cpa-switch-dl');
   mkdirSync(dir, { recursive: true });
   const target = join(dir, asset.name);
 
   const response = await fetch(asset.url, {
-    headers: { 'user-agent': 'dsh-cpa-panel' },
+    headers: { 'user-agent': 'dsh-cpa-switch' },
     signal: AbortSignal.timeout(600000),
   });
   if (!response.ok) throw new Error(`下载失败：HTTP ${String(response.status)}`);
@@ -292,6 +384,26 @@ export async function prepare({ port, secretKey, onStep }) {
   const done = {};
   for (const key of ['cpa', 'plugins']) {
     const source = SOURCES[key];
+
+    /**
+     * **已有就跳过 —— 只补缺件，绝不重下。**
+     *
+     * 这条判断是设计约束 1 的落地（"绝不覆盖用户已有的安装"）。
+     * 没有它时，只要配置缺一次就会把 exe 与渠道插件**整包重下**：
+     * 40 MB 白流量、几十秒白等，而且会把用户手上正在跑的那份 exe
+     * 覆盖成刚下载的版本 —— 一次「补配置」变成一次静默升级。
+     *
+     * 判据刻意宽松（exe 存在 / dll 数 > 0）而不是比对版本：
+     * 插件无权替用户决定"你那份旧了该换"，那需要用户显式点重装。
+     */
+    const alreadyPresent =
+      key === 'cpa' ? existsSync(managedExePath()) : countDlls(managedPluginsDir()) > 0;
+    if (alreadyPresent) {
+      step('reuse', { key, label: source.label });
+      done[key] = { reused: true };
+      continue;
+    }
+
     step('query', { key, label: source.label });
     const asset = await findAsset(source);
     step('download', { key, label: source.label, name: asset.name, size: asset.size });
