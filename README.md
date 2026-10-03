@@ -30,23 +30,33 @@
 
 ## 前置条件
 
-⚠️ **本插件不含 CPA 本体**（只有约 108 KB 的 JS），它只是 CPA 的管理界面。
+只需要 **DSH**（DeepSeek Harness）。本插件不含 CPA 本体，只有约 170 KB 的 JS。
 
-你需要先有：
+CPA 本体、渠道插件（`workbuddy.dll` 等）、管理密钥**都不需要你准备** ——
+插件首次启动时一条龙自动做完：下载 → 校验 sha256 → 解压 → 生成配置 → 生成管理密钥。
+下载走系统代理（内置 `fetch` 不认 `HTTPS_PROXY`，所以有了 [net.js](net.js)）。
 
-1. **DSH**（DeepSeek Harness）
-2. **CLIProxyAPI 本体** —— 从官方仓库获取
-3. **对应的渠道插件**（`workbuddy.dll` / `trae.dll` / `qoder.dll` / `zcode.dll`）—— 放在 CPA 的 `plugins/` 目录
-4. **CPA 的管理密钥** —— 配置项 `adminKey`，或写进凭据库 `CPA_ADMIN_KEY`
+机器上**已有 CPA 时复用，不覆盖**（按「exe 存在 / dll 数 > 0」判定）。
 
 ## 安装
+
+从 npm 安装：
+
+```
+dsh plugin --profile <profile> add dsh-cpa-switch
+```
+
+GUI 的插件管理器里填包名 `dsh-cpa-switch` 等价。
+
+从本地目录安装（开发用）：
 
 ```
 plugin_manager action: install_bundle
 target: <本目录绝对路径>
 ```
 
-插件必须放在 **profile 的 `node_modules/` 下，且是真实目录**（不是符号链接）。
+无论哪种方式，插件最终必须落在 **profile 的 `node_modules/` 下，且是真实目录**（不是符号链接）。
+profile 的 `dependencies` 里保留同名条目是**已安装声明**，`dsh.profile.bundles` 里的是**加载声明** —— 两者都要有。
 
 **为什么不能用 `link:` 指到 profile 树之外**：DSH 的 runtime resolution 按**真实目录**判定链接作用域。profile 外的链接会让插件的 `@deepseek-ai/*` 导入退回原生 Node 解析，而 `profiles/node_modules` 不在其祖先链上 → `ERR_MODULE_NOT_FOUND` → 插件显示"未运行"。
 
