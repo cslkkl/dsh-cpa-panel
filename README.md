@@ -110,26 +110,36 @@ target: <本目录绝对路径>
 
 | 路由 | 方法 | 作用 |
 |---|---|---|
-| `/api/v1/cpa/status` | GET | CPA 运行状态、端口、是否已配密钥 |
 | `/api/v1/cpa/setup` | GET/POST | 环境状态 / 一键下载 CPA 与渠道插件 |
+| `/api/v1/cpa/status` | GET | CPA 运行状态、端口、是否已配密钥 |
 | `/api/v1/cpa/plugins` | GET | 已装渠道列表与能力 |
 | `/api/v1/cpa/accounts?plugin=` | GET | 账号 + 余额 |
-| `/api/v1/cpa/models?plugin=` | GET | 模型目录（只读展示） |
-| `/api/v1/cpa/school?plugin=` | GET | 成长中心 |
+| `/api/v1/cpa/models?plugin=` | GET | 该渠道可选模型 |
+| `/api/v1/cpa/school` | GET | 成长中心（任务 / 奖励）信息 |
 | `/api/v1/cpa/action` | POST | `{plugin, kind, authIndex}` → 签到 / 任务 |
 | `/api/v1/cpa/account-select` | POST | `{plugin, authIndex}` → **选择账号**（启用它，同渠道其余自动禁用） |
 | `/api/v1/cpa/account-enabled` | POST | `{plugin, authIndex, enabled}` → 单个启用 / 禁用 |
 | `/api/v1/cpa/account-intent` | GET/POST | 读 / 恢复「用户上次的账号选择」 |
-| `/api/v1/cpa/auth` | GET/POST | 起登录（`?plugin=`）/ 查进度（`?state=`）/ 取消（POST + `{action,state}`） |
+| `/api/v1/cpa/auth` | GET/POST | 起登录（`?plugin=`）/ 查进度（`?state=`）/ 取消（POST + `{state}`） |
 | `/api/v1/cpa/auto-checkin` | GET/POST | 自动签到开关 |
 | `/api/v1/cpa/routing` | GET/POST | 路由策略 + 各渠道 `scheduler_mode` |
 | `/api/v1/cpa/scheduler-mode` | POST | 把各渠道 `scheduler_mode` 归一到 `off` |
 | `/api/v1/cpa/priority` | GET/POST | 账号使用顺序（面板已无 UI，脚本用） |
 | `/api/v1/cpa/start` | POST | 手动拉起 CPA |
 
+> 上表是路由的**可读索引**；权威事实源是 `index.js` 中的 `path:` 声明，两者不一致时以代码为准。
+
 **改路由前必读**：同一 `path` 只能注册一次（多方法合并在一个条目里）、
 方法只有 `GET`/`HEAD`/`POST`。违反任一条会让**所有**路由失效。
 改完跑 `node ../scripts/check-routes.mjs`。
+
+## 文档
+
+| 想看什么 | 去哪 |
+|---|---|
+| 为什么这样设计（不变决策、契约边界、防错清单） | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 下一步做什么、当前卡在哪 | [docs/PLAN.md](docs/PLAN.md) |
+| 调研报告与源码锚点（只读历史） | [调研报告归档/核心文档集/99-入口索引.md](调研报告归档/核心文档集/99-入口索引.md) |
 
 ## 许可
 
