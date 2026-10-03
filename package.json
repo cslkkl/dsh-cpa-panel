@@ -13,7 +13,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/cslkkl/dsh-cpa-panel.git"
+    "url": "git+https://github.com/cslkkl/dsh-cpa-panel.git"
   },
   "icon": "./icon.svg",
   "exports": {
@@ -46,8 +46,26 @@
       ]
     }
   },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.1.7-rc.2"
+  },
   "peerDependencies": {
+    "@deepseek-ai/dsh-client-ui-plugin-manager": ">=0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.7-rc.2",
     "@deepseek-ai/dsh-credentials": ">=0.1.7-rc.2",
     "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-plugin-manager": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-primitives": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings": {
+      "optional": true
+    }
   }
 }

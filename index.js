@@ -1125,34 +1125,31 @@ export async function apply(ctx, refs) {
       const routes = [
         {
           /**
-           * 环境状态：托管目录里 CPA 和渠道插件装了没、缺什么。
+           * 环境准备。
            *
-           * 给前端的引导页用 —— 缺东西时显示「一键准备环境」。
+           * - `GET`  —— 查托管目录里 CPA 和渠道插件装了没、缺什么（给引导页用）
+           * - `POST` —— 一键准备：下载 + 校验 + 解压 + 写配置
+           *
+           * ⚠️ **GET 和 POST 必须在同一个条目里**（方法合并），
+           * 不能写成两个同 path 的条目：注册实现按 pathname 精确匹配，
+           * 同一 path 注册第二次会**抛异常**，进而让整个 `routes.map()`
+           * 中断、**所有路由都注册不上**。曾因此让插件完全不可用。
+           *
+           * POST 要下载约 40 MB、耗时实测 96 秒，所以同步跑完再返回；
+           * 进度靠 `setup.running` 这个状态让前端轮询 `GET` 看到。
            */
           path: '/api/v1/cpa/setup',
-          methods: ['GET'],
-          handle: async () => {
+          methods: ['GET', 'POST'],
+          handle: async (request) => {
             const config = readConfig();
-            return json({
-              ok: true,
-              ...inspectSetup({ port: config.port, secretKey: cachedAdminKey.value }),
-            });
-          },
-        },
-        {
-          /**
-           * 一键准备环境：下载 CPA 本体 + 渠道插件、校验、解压、写配置。
-           *
-           * ⚠️ 要下载约 40 MB、耗时几十秒。这里**同步跑完再返回**，
-           * 前端拿到的是一次性结果（进度靠 `GET /setup` 轮询状态看）。
-           * 之所以不做成流式：DSH 的插件 HTTP 层是简单请求/响应，
-           * 塞流式协议会把这一层复杂化，而"下载中"这个状态靠轮询
-           * 已经够用。
-           */
-          path: '/api/v1/cpa/setup',
-          methods: ['POST'],
-          handle: async () => {
-            const config = readConfig();
+            if (request.method !== 'POST') {
+              return json({
+                ok: true,
+                running: setup.running,
+                ...inspectSetup({ port: config.port, secretKey: cachedAdminKey.value }),
+              });
+            }
+
             const secretKey = cachedAdminKey.value;
             if (secretKey === '') {
               /* 没有管理密钥就生不出可用配置 —— 先让用户配密钥 */
@@ -1261,17 +1258,30 @@ export async function apply(ctx, refs) {
            *
            * - `GET  ?plugin=<渠道>`        起一次登录，返回 `{state, url}`
            * - `GET  ?state=<state>`        查进度（`wait` / 完成 / 过期）
-           * - `DELETE ?state=<state>`      取消
+           * - `POST {action:'cancel', state}` 取消
+           *
+           * ⚠️ 取消**不能用 DELETE**：`ConnectionFetchMethod` 只有
+           * `GET` / `HEAD` / `POST` 三档，注册一个 DELETE 会**抛异常**，
+           * 进而让整个 `routes.map()` 中断、所有路由都注册不上。
+           * 曾因此让插件完全不可用，所以这里走 POST + body 里的 action。
            *
            * 前端拿到 `url` 后引导用户在浏览器完成授权即可 ——
            * **不需要用户手动粘贴回调 URL**（本机模式下 CPA 自己收回调并保存凭据）。
            */
           path: '/api/v1/cpa/auth',
-          methods: ['GET', 'DELETE'],
+          methods: ['GET', 'POST'],
           handle: async (request) => {
+            if (request.method === 'POST') {
+              let body = {};
+              try {
+                body = await request.json();
+              } catch {
+                body = {};
+              }
+              return json(await authCancel(typeof body.state === 'string' ? body.state : ''));
+            }
             const url = new URL(request.url);
             const state = url.searchParams.get('state');
-            if (request.method === 'DELETE') return json(await authCancel(state ?? ''));
             if (state !== null) return json(await authStatus(state));
             return json(await authStart(url.searchParams.get('plugin') ?? ''));
           },
@@ -1383,14 +1393,71 @@ export async function apply(ctx, refs) {
         },
       ];
 
-      const disposers = routes.map((route) =>
-        connectionCtx.connection.fetch.register({
-          path: route.path,
-          methods: route.methods,
-          requestBody: 'buffered',
-          fetch: (request) => route.handle(request),
-        }),
-      );
+      /**
+       * 校验并归一化路由表，**然后逐条注册**。
+       *
+       * 宿主的路由契约（见 `dsh-ds-balance` 的 `lib/http/routes.js` 注释）：
+       *  - 同一 `path` **只能注册一次**，方法要在表里合并；
+       *  - `ConnectionFetchMethod` 只有 `GET` / `HEAD` / `POST` 三档。
+       *
+       * 违反任意一条，`register` 都会**抛异常**。而下面原本是
+       * `routes.map(...)` —— 一条抛了，**整个 map 中断，所有路由都注册不上**，
+       * 表现为"插件完全打不开"（连 `/status` 都 404）。
+       *
+       * 所以这里先归一化：同 path 的多个条目**合并方法**、不支持的方法**剔除**。
+       * 归一化后仍然逐条 try/catch —— 宁可少一条路由，也不能全废。
+       */
+      const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST']);
+      const merged = new Map();
+      for (const route of routes) {
+        const bad = (route.methods ?? []).filter((m) => !ALLOWED_METHODS.has(m));
+        if (bad.length > 0) {
+          ctx.logger?.warn?.(
+            'cpa-panel: 路由 %s 声明了不支持的方法 %o，已剔除（只允许 GET/HEAD/POST）',
+            route.path,
+            bad,
+          );
+        }
+        const methods = (route.methods ?? []).filter((m) => ALLOWED_METHODS.has(m));
+        if (methods.length === 0) continue;
+
+        const existing = merged.get(route.path);
+        if (existing === undefined) {
+          merged.set(route.path, { ...route, methods });
+          continue;
+        }
+        /**
+         * 同 path 已有条目。
+         *
+         * 合并方法，并把两个 handler 串起来 —— 各自只处理自己声明的方法，
+         * 让写代码的人可以像写两条路由那样写，而注册时仍是**一条**。
+         */
+        ctx.logger?.warn?.('cpa-panel: 路由 %s 被声明多次，已合并方法', route.path);
+        const previous = existing.handle;
+        const current = route.handle;
+        existing.methods = [...new Set([...existing.methods, ...methods])];
+        existing.handle = async (request) =>
+          existing.methods.includes(request.method) && methods.includes(request.method)
+            ? current(request)
+            : previous(request);
+      }
+
+      const disposers = [];
+      for (const route of merged.values()) {
+        try {
+          disposers.push(
+            connectionCtx.connection.fetch.register({
+              path: route.path,
+              methods: route.methods,
+              requestBody: 'buffered',
+              fetch: (request) => route.handle(request),
+            }),
+          );
+        } catch (error) {
+          /* 单条失败不该拖垮其余路由 */
+          ctx.logger?.error?.('cpa-panel: 注册路由 %s 失败：%o', route.path, error);
+        }
+      }
 
       return () => {
         for (const dispose of disposers) {

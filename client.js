@@ -259,9 +259,19 @@ window.__ModuleLoader__.load({
       return api('/api/v1/cpa/auth?state=' + encodeURIComponent(state));
     }
 
-    /** 取消登录会话。 */
+    /**
+     * 取消登录会话。
+     *
+     * ⚠️ 走 `POST` 而不是 `DELETE`：DSH 的 `ConnectionFetchMethod` 只有
+     * `GET` / `HEAD` / `POST` 三档。注册一个 DELETE 会抛异常，并让宿主
+     * **所有**路由注册失败（不只这一条）—— 曾因此让插件完全不可用。
+     */
     function authCancel(state) {
-      return api('/api/v1/cpa/auth?state=' + encodeURIComponent(state), { method: 'DELETE' });
+      return api('/api/v1/cpa/auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel', state }),
+      });
     }
 
     /** 数字千分位。 */
