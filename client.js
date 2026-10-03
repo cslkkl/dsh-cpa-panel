@@ -1,5 +1,5 @@
 /**
- * dsh-cpa-panel —— 浏览器半边。
+ * dsh-cpa-switch —— 浏览器半边。
  *
  * 一个「内置插件」设置分区里的标签页：CPA 各插件的账号面板。
  *
@@ -14,7 +14,7 @@
  * react 由宿主加载器提供，不打进这一侧。
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-cpa-panel',
+  id: 'dsh-cpa-switch',
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
@@ -44,10 +44,10 @@ window.__ModuleLoader__.load({
      * **包名**，必须与 package.json 的 `name` 逐字一致。
      *
      * ⚠️ 别拿 `TAB_ID` 当包名用：插件页 `plugins.detail.section` 收到的
-     * `subject.pkg.name` 是**完整包名**（`dsh-cpa-panel`），而标签 id 是短名
+     * `subject.pkg.name` 是**完整包名**（`dsh-cpa-switch`），而标签 id 是短名
      * （`cpa-panel`）——两者不相等会让区块**静默不渲染**（不报错，极难查）。
      */
-    const PKG_NAME = 'dsh-cpa-panel';
+    const PKG_NAME = 'dsh-cpa-switch';
 
     const zh = {
       tab: 'CPA 面板',
@@ -88,6 +88,11 @@ window.__ModuleLoader__.load({
       setupRun: '一键准备环境',
       setupRefresh: '重新检测',
       setupWorking: '正在下载并解压…请稍候（不要关闭窗口）',
+      setupStepQuery: '正在查询最新版本',
+      setupStepDownload: '正在下载',
+      setupStepProgress: '正在下载',
+      setupStepVerify: '正在校验完整性',
+      setupStepExtract: '正在解压',
       setupFailed: '准备失败',
       setupNote:
         '不会覆盖你自己装的 CPA。若已经装了，请在插件设置里把 exePath 指向它，或把这个目录加进探测位置。',
@@ -162,6 +167,11 @@ window.__ModuleLoader__.load({
       setupRun: 'Prepare environment',
       setupRefresh: 'Re-check',
       setupWorking: 'Downloading and extracting… please wait (do not close the window)',
+      setupStepQuery: 'Looking up the latest release',
+      setupStepDownload: 'Downloading',
+      setupStepProgress: 'Downloading',
+      setupStepVerify: 'Verifying checksum',
+      setupStepExtract: 'Extracting',
       setupFailed: 'Preparation failed',
       setupNote:
         'Your own CPA installation is never overwritten. If you already have one, point exePath at it in the plugin settings instead.',
@@ -233,6 +243,43 @@ window.__ModuleLoader__.load({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ plugin, authIndex }),
       });
+    }
+
+    /**
+     * 把宿主上报的安装进度渲染成一行话。
+     *
+     * 宿主 `onStep` 的 `phase` 取值见 `setup.js` 的 `prepare()`：
+     * `query` / `download` / `progress` / `verify` / `extract` / `done`。
+     * 这里**只做展示，不做状态判断** —— 进度缺失（undefined）时返回空串，
+     * 让调用方退回显示通用文案，而不是显示"undefined"。
+     *
+     * @param progress - 宿主 `GET /setup` 返回的 `progress`。
+     * @param t - 本地化函数。
+     * @returns 一行可读文案；没有可显示的内容时为空串。
+     */
+    function progressLine(progress, t) {
+      if (progress === null || typeof progress !== 'object') return '';
+      const label = typeof progress.label === 'string' && progress.label !== '' ? progress.label : '';
+      const sizes = (received, total) => {
+        if (!Number.isFinite(received) || !Number.isFinite(total) || total <= 0) return '';
+        const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+        const percent = Math.min(100, Math.round((received / total) * 100));
+        return `${mb(received)} / ${mb(total)} MB（${String(percent)}%）`;
+      };
+      switch (progress.phase) {
+        case 'query':
+          return `${t('setupStepQuery')}${label === '' ? '' : `：${label}`}`;
+        case 'download':
+          return `${t('setupStepDownload')}${label === '' ? '' : `：${label}`}`;
+        case 'progress':
+          return `${t('setupStepProgress')}${label === '' ? '' : `：${label}`} ${sizes(progress.received, progress.total)}`.trim();
+        case 'verify':
+          return `${t('setupStepVerify')}${label === '' ? '' : `：${label}`}`;
+        case 'extract':
+          return `${t('setupStepExtract')}${label === '' ? '' : `：${label}`}`;
+        default:
+          return '';
+      }
     }
 
     /**
@@ -847,6 +894,32 @@ window.__ModuleLoader__.load({
         return result;
       }, []);
 
+      /**
+       * 下载中轮询进度。
+       *
+       * 为什么需要：`POST /setup` 要同步下载约 40 MB、实测 96 秒才返回，
+       * 期间前端只有一句"正在下载"，用户看不出是在动还是卡死了。
+       * 宿主把每一步写进 `setup.progress`，这里每秒拉一次。
+       *
+       * 只在 `setup.phase === 'working'` 时轮询 —— 装完（`ok: true`）
+       * 立刻停，避免空转；被卸载时也清掉，否则刷新页面会留下僵尸定时器。
+       */
+      React.useEffect(() => {
+        if (setup?.phase !== 'working') return undefined;
+        const timer = setInterval(() => {
+          void (async () => {
+            const result = await api('/api/v1/cpa/setup');
+            if (result?.ok !== true) return;
+            /**
+             * 宿主 `running` 还是 true 就保持 `working`（并把最新进度带上），
+             * 否则说明装完了 —— 用宿主的真实状态覆盖，别自己猜。
+             */
+            setSetup(result.running === true ? { ...result, phase: 'working' } : result);
+          })();
+        }, 1000);
+        return () => clearInterval(timer);
+      }, [setup?.phase]);
+
       /** 一键准备环境：下载 + 校验 + 解压 + 写配置。 */
       const runSetup = React.useCallback(async () => {
         setSetup({ phase: 'working' });
@@ -944,7 +1017,15 @@ window.__ModuleLoader__.load({
                   )
                 : null,
               setup.phase === 'working'
-                ? React.createElement('div', { className: 'cpa-hint' }, t('setupWorking'))
+                ? React.createElement(
+                    'div',
+                    { className: 'cpa-hint' },
+                    t('setupWorking'),
+                    /* 有具体进度就附在后面；拿不到就只显示那句通用的 */
+                    progressLine(setup.progress, t) !== ''
+                      ? React.createElement('div', { className: 'cpa-hint' }, progressLine(setup.progress, t))
+                      : null,
+                  )
                 : setup.phase === 'error'
                   ? React.createElement(
                       'div',
@@ -1077,10 +1158,10 @@ window.__ModuleLoader__.load({
 
     function injectCss() {
       if (typeof document === 'undefined') return;
-      if (document.querySelector('style[data-plugin-css="dsh-cpa-panel"]') !== null) return;
+      if (document.querySelector('style[data-plugin-css="dsh-cpa-switch"]') !== null) return;
       const tag = document.createElement('style');
-      tag.dataset.plugin = 'dsh-cpa-panel';
-      tag.dataset.pluginCss = 'dsh-cpa-panel';
+      tag.dataset.plugin = 'dsh-cpa-switch';
+      tag.dataset.pluginCss = 'dsh-cpa-switch';
       tag.textContent = CSS;
       document.head.appendChild(tag);
     }

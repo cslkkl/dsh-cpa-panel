@@ -1,4 +1,4 @@
-# dsh-cpa-panel
+# dsh-cpa-switch
 
 把 **CLIProxyAPI（CPA）** 的账号管理搬进 **DeepSeek Harness（DSH）** —— 看余额、签到、跑任务、切账号，日常不用再开 CPA 的网页控制台。
 
@@ -139,6 +139,7 @@ target: <本目录绝对路径>
 |---|---|
 | 为什么这样设计（不变决策、契约边界、防错清单） | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 下一步做什么、当前卡在哪 | [docs/PLAN.md](docs/PLAN.md) |
+| 蓝图（S0–S7）逐阶段可行性评估 | [docs/BLUEPRINT-ASSESSMENT.md](docs/BLUEPRINT-ASSESSMENT.md) |
 | 调研报告与源码锚点（只读历史） | [调研报告归档/核心文档集/99-入口索引.md](调研报告归档/核心文档集/99-入口索引.md) |
 
 ## 许可

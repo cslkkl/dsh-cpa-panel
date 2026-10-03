@@ -1,4 +1,4 @@
-# dsh-cpa-panel 架构说明
+# dsh-cpa-switch 架构说明
 
 > 读者：改本仓代码的开发者与 agent。
 > 范围：不变的设计决策、契约边界、防错清单（"为什么"）。
@@ -14,7 +14,8 @@
 
 ## 1. 现状与目标的区别
 
-**本仓当前是已发布的可用插件，不是空骨架。** 目标形态（TS 工程化 + 单元机制 + 首启托管）尚未开工，规划见 [PLAN.md](PLAN.md)。
+**本仓当前是已发布的可用插件，不是空骨架。** 目标形态（TS 工程化 + 单元机制 + 首启托管）尚未开工，规划见 [PLAN.md](PLAN.md)，
+各阶段的可行性与风险对照见 [蓝图实施评估](BLUEPRINT-ASSESSMENT.md)。
 
 | 维度 | 现状（`0.1.0`，已发布） | 目标（未开工） |
 |---|---|---|
@@ -148,7 +149,7 @@ DSH 关闭时只关自己启的那个进程。
 |---|---|---|---|
 | 1 | CLIProxyAPI | 宿主本体（Go exe），只裁剪不重写 | https://github.com/zlZayn/CLIProxyAPI/tree/local-autobrowser |
 | 2 | cpa-multi-plugins | 渠道插件集（4 个 dll） | https://github.com/mmqz/cpa-multi-plugins |
-| 3 | 本仓 | 控制面 | https://github.com/cslkkl/dsh-cpa-panel |
+| 3 | 本仓 | 控制面 | https://github.com/cslkkl/dsh-cpa-switch |
 | 4 | dsh-workbuddy-bridge | TS 工程范本（仅参考） | https://github.com/zlZayn/dsh-workbuddy-bridge |
 | 5 | workbuddy-bridge-0.1.2-source | Go clean 范本（仅参考） | https://github.com/ki11a-Conton/workbuddy-bridge-0.1.2-source |
 

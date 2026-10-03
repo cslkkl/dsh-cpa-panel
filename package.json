@@ -1,5 +1,5 @@
 {
-  "name": "dsh-cpa-panel",
+  "name": "dsh-cpa-switch",
   "version": "0.1.0",
   "type": "module",
   "description": "DeepSeek Harness 插件：在 DSH 里管理 CLIProxyAPI 的账号 —— 余额、签到、任务、切换账号，并让 CPA 随 DSH 启停。",
@@ -13,7 +13,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cslkkl/dsh-cpa-panel.git"
+    "url": "git+https://github.com/cslkkl/dsh-cpa-switch.git"
   },
   "icon": "./icon.svg",
   "exports": {

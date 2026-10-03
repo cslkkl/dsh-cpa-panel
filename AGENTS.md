@@ -1,4 +1,4 @@
-# dsh-cpa-panel — 维护索引
+# dsh-cpa-switch — 维护索引
 
 > 本文件是 agent 的自动注入入口：只装「每次开工都需要的状态」。
 > 详细设计 → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)｜进行中的计划 → [docs/PLAN.md](docs/PLAN.md)
@@ -19,6 +19,7 @@
 | 怎么用、怎么装、配什么 | [README.md](README.md) |
 | 为什么这样设计 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 下一步做什么、卡在哪 | [docs/PLAN.md](docs/PLAN.md) |
+| 蓝图 S0–S7 可行性评估（拍板依据） | [docs/BLUEPRINT-ASSESSMENT.md](docs/BLUEPRINT-ASSESSMENT.md) |
 | 调研结论与源码锚点 | [调研报告归档/核心文档集/99-入口索引.md](调研报告归档/核心文档集/99-入口索引.md) |
 | 调研档案（只读历史） | [调研报告归档/](调研报告归档/) |
 

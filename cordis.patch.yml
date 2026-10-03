@@ -1,9 +1,9 @@
-# dsh-cpa-panel bundle patch —— 把本插件作为一行插入 dsh profile。
+# dsh-cpa-switch bundle patch —— 把本插件作为一行插入 dsh profile。
 #
 # 格式对齐 DSH 官方 bundle patch：顶层是 loader patch 条目数组；
 # `insert` 在 profile 根上追加插件行。
 #
 # name 必须是 loader 能从 profile 的 node_modules 解析到的模块 id，即本包自身的包名。
 - insert:
-    - id: dsh-cpa-panel
-      name: dsh-cpa-panel
+    - id: dsh-cpa-switch
+      name: dsh-cpa-switch
