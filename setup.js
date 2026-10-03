@@ -32,12 +32,19 @@ import { downloadTo, getJson } from './net.js';
  *
  * `asset` 里的 `{version}` 会被替换成实际 tag 去掉 `v` 前缀的版本号。
  *
- * ⚠️ **CPA 本体可切到自家 Release**（见 `cpaOwner`）。
- * 官方源发的是「全家桶」；自建源发的是按需编译的版本。切换只改这一个常量，
- * 但**自建源必须先真的存在 Release**，否则用户装插件时会卡在下载这一步
- * —— 没有兜底，就是又一次「启不动 CPA」。
+ * ⚠️ **CPA 本体从自家 Release 下载**（见 `cpaOwner`）。
+ * 这么做是为了**不受上游发版节奏牵制** —— 上游若改了产物命名或撤了 Release，
+ * 用户会当场卡在下载这一步，而那是我们修不了的。
+ *
+ * 自家 Release 由 `cslkkl/CLIProxyAPI` 的 `release-windows` 工作流产出：
+ * **手工触发、只编 Windows/amd64**，源码始终取上游的发布 tag（不夹带本地改动），
+ * 所以用户拿到的东西与上游官方产物一致，只是存放位置换成了我们自己控制的仓库。
+ * 产物名沿用上游格式，`assetPattern` 不用改。
+ *
+ * 该常量**绝不能指向一个还没有 Release 的仓库** —— 没有兜底，
+ * 就是又一次「启不动 CPA」（见 .agents/notes/incident-exe-discovery-2026-10-03.md）。
  */
-const cpaOwner = 'router-for-me';
+const cpaOwner = 'cslkkl';
 export const SOURCES = {
   cpa: {
     repo: `${cpaOwner}/CLIProxyAPI`,

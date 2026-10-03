@@ -1,6 +1,6 @@
 {
   "name": "dsh-cpa-switch",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "DeepSeek Harness 插件：在 DSH 里管理 CLIProxyAPI 的账号 —— 余额、签到、任务、切换账号，并让 CPA 随 DSH 启停。",
   "license": "MIT",
