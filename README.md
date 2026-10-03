@@ -88,6 +88,7 @@ target: <本目录绝对路径>
 | `index.js` | 宿主半端：生命周期、HTTP 路由、持有密钥 |
 | `adapters.js` | 四个渠道的接口差异收敛层 |
 | `setup.js` | 环境准备：下载 CPA 本体与渠道插件（校验 sha256 后解压） |
+| `net.js` | 网络层：带代理的 HTTP 客户端（内置 `fetch` 忽略 `HTTPS_PROXY`） |
 | `client.js` | 浏览器半端：面板 UI（CJS bundle） |
 | `cordis.patch.yml` | 把本插件插入 profile 的 Loader 行 |
 | `locale/*.json` | 插件卡片标题与描述 |

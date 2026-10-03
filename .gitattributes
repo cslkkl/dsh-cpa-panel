@@ -1,0 +1,16 @@
+# 换行一律 LF：仓库内与检出后都是 LF，不做 CRLF 转换。
+#
+# 为什么需要这个文件：本机 `core.autocrlf=true`，Git 会在**检出时**把纯 LF
+# 转成 CRLF。而 `cordis.patch.yml` 必须是纯 LF —— 否则每次改它都会产生
+# 整文件 diff 噪音（见 dsh-cpa-switch/AGENTS.md「活跃坑」）。
+# 与其依赖每个人的本地配置，不如把规则写进仓库。
+#
+# `text=auto eol=lf` = 提交时归一化为 LF，检出时也写 LF。
+* text=auto eol=lf
+
+# 二进制文件不做任何换行处理。
+*.png binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.ico binary

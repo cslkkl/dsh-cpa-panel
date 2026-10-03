@@ -15,13 +15,17 @@
  *  3. 校验 sha256 后才解压（网络下载的东西不能盲信）。
  *  4. 解压用系统 `tar`（Windows 10+ 自带 bsdtar，能解 zip）——
  *     不引入 zip 依赖，插件保持零 npm 依赖。
+ *  5. **下载必须走代理**（当系统有代理时）—— 见 [net.js] 的说明：
+ *     内置 `fetch` 默认忽略 `HTTPS_PROXY`，在受限网络下会让用户永远装不上。
  * @module dsh-cpa-switch/setup
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
+
+import { downloadTo, getJson } from './net.js';
 
 /**
  * 各平台的下载源。
@@ -222,12 +226,15 @@ export function humanSize(bytes) {
 
 /** 查 latest release 里符合模式的资产。 */
 export async function findAsset(source) {
-  const response = await fetch(source.latestApi, {
-    headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-cpa-switch' },
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!response.ok) throw new Error(`release 查询失败：HTTP ${String(response.status)}`);
-  const data = await response.json();
+  let data;
+  try {
+    data = await getJson(source.latestApi, {
+      headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-cpa-switch' },
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (error) {
+    throw new Error(`release 查询失败：${String(error?.message ?? error)}`);
+  }
   const asset = (data.assets ?? []).find((a) => source.assetPattern.test(String(a.name)));
   if (asset === undefined) throw new Error(`release 里没有匹配 ${String(source.assetPattern)} 的文件`);
   return {
@@ -240,30 +247,27 @@ export async function findAsset(source) {
   };
 }
 
-/** 下载到临时文件，返回路径与 sha256。 */
+/**
+ * 下载到临时文件，返回路径与 sha256。
+ *
+ * 走 [net.js] 的 `downloadTo`（流式 + 代理支持），**不把整包读进内存**：
+ * CPA 本体 22 MB、渠道包 17 MB，一次性 Buffer.concat 在高并发下不划算。
+ */
 export async function download(asset, onProgress) {
   const dir = join(tmpdir(), 'dsh-cpa-switch-dl');
   mkdirSync(dir, { recursive: true });
   const target = join(dir, asset.name);
 
-  const response = await fetch(asset.url, {
-    headers: { 'user-agent': 'dsh-cpa-switch' },
-    signal: AbortSignal.timeout(600000),
-  });
-  if (!response.ok) throw new Error(`下载失败：HTTP ${String(response.status)}`);
-
-  const total = Number(response.headers.get('content-length') ?? asset.size ?? 0);
-  const hash = createHash('sha256');
-  const chunks = [];
-  let received = 0;
-  for await (const chunk of response.body) {
-    chunks.push(chunk);
-    hash.update(chunk);
-    received += chunk.length;
-    if (typeof onProgress === 'function') onProgress(received, total);
+  try {
+    const { bytes, sha256 } = await downloadTo(asset.url, target, {
+      headers: { 'user-agent': 'dsh-cpa-switch' },
+      signal: AbortSignal.timeout(600000),
+      onProgress,
+    });
+    return { path: target, sha256, size: bytes };
+  } catch (error) {
+    throw new Error(`下载失败：${String(error?.message ?? error)}`);
   }
-  writeFileSync(target, Buffer.concat(chunks));
-  return { path: target, sha256: hash.digest('hex'), size: received };
 }
 
 /** 校验 sha256；`expected` 为空（老 release 没提供）时跳过。 */

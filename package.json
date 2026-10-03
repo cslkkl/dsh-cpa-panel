@@ -28,6 +28,7 @@
     "adapters.js",
     "client.js",
     "setup.js",
+    "net.js",
     "cordis.patch.yml",
     "icon.svg",
     "locale/*.json",
